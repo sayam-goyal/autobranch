@@ -664,24 +664,52 @@ class Agent:
         mechanically extractable. The digest is explicit in the transcript so
         the model can tell compression from amnesia.
         """
-        # Repeat: one fold may not be enough if the recent half is itself large.
-        # Stop at two entries (digest + newest turn), which cannot compact further.
-        while self.transcript_tokens() > self.transcript_token_budget and len(self.transcript) > 2:
-            # Keep the most recent turns intact; they carry the live hypothesis.
-            keep_from = max(1, len(self.transcript) // 2)
-            older, recent = self.transcript[:keep_from], self.transcript[keep_from:]
-            existing = ""
-            if older[0]["content"].startswith(_DIGEST_HEADER):
-                existing = older[0]["content"][len(_DIGEST_HEADER):].strip()
-                older = older[1:]
-            lines = [line for line in (_digest_line(m) for m in older) if line]
-            digest = _DIGEST_HEADER + "\n" + "\n".join(filter(None, [existing, *lines]))
-            self.transcript = [{"role": "user", "content": digest}] + recent
+        # One fold may not be enough if the surviving half is itself large, so
+        # this repeats -- but each pass must consume at least one real turn or
+        # it would re-fold the digest into itself forever.
+        while self.transcript_tokens() > self.transcript_token_budget:
+            lines, turns = self._split_digest()
+            if len(turns) <= 1:
+                break  # a single live turn over budget is the caller's problem
+            fold = turns[: max(1, len(turns) // 2)]
+            keep = turns[len(fold) :]
+            lines += [line for line in (_digest_line(m) for m in fold) if line]
+            digest = _DIGEST_HEADER + "\n" + "\n".join(
+                _cap_digest(lines, max(1, self.transcript_token_budget // 2))
+            )
+            self.transcript = [{"role": "user", "content": digest}] + keep
+
+    def _split_digest(self) -> tuple[list[str], list[dict[str, str]]]:
+        """Separate an existing digest's lines from the un-summarised turns."""
+        if self.transcript and self.transcript[0]["content"].startswith(_DIGEST_HEADER):
+            body = self.transcript[0]["content"][len(_DIGEST_HEADER) :]
+            return [line for line in body.split("\n") if line.strip()], self.transcript[1:]
+        return [], list(self.transcript)
 
 
 _DIGEST_HEADER = (
     "[compacted history -- earlier turns on this branch, summarised, nothing dropped]"
 )
+_ELISION = "  [... {n} older summary lines elided to stay inside the token budget ...]"
+
+
+def _cap_digest(lines: list[str], token_budget: int) -> list[str]:
+    """Bound the digest, eliding the oldest lines *visibly* if it overflows.
+
+    An unbounded digest just moves the context wall. When it does overflow,
+    the elision is stated in the text: the model must be able to tell that
+    history was compressed, because a model that believes it has the full
+    record will re-run a sibling's experiment.
+    """
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):  # newest summary lines are the useful ones
+        cost = _estimate_tokens(line)
+        if used + cost > token_budget and kept:
+            return [_ELISION.format(n=len(lines) - len(kept))] + kept
+        used += cost
+        kept.insert(0, line)
+    return kept
 
 
 def _digest_line(message: dict[str, str]) -> str:

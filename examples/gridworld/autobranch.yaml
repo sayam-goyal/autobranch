@@ -1,0 +1,90 @@
+# The reference bundle. Small, CPU-only, and deliberately hard to solve by
+# accident: the goal is a locked door and the key sits outside every monotone
+# path to it, so a reward built from distance_to_goal alone plateaus at zero.
+name: gridworld
+version: 1
+description: >
+  8x8 locked-door gridworld. The agent starts in a corner, must collect a key
+  from the far corner, then reach the goal; lava kills and a 5% slip
+  probability makes hugging it expensive. Reward design decides whether this
+  is solved or not, which is the point.
+
+image:
+  base: debian_slim
+  python: "3.11"
+  pip:
+    - numpy>=1.26
+    - torch>=2.2
+    - pyyaml>=6.0
+
+entrypoint: grid_env:make_env
+
+resources:
+  gpu: null
+  cpu: 2
+  memory: 2048
+
+# Facts about a transition. No rewards, no opinions. Every one is a per-lane
+# array of shape [n_envs]; the ranges below are what validate_env checks
+# against, so they are honest rather than aspirational.
+signals:
+  - name: reached_goal
+    type: bool
+    range: [0, 1]
+    doc: >
+      1 on the step the agent enters the goal tile. The goal is locked: it can
+      only be entered while holding the key, so this is also the success
+      condition of the objective.
+  - name: stepped_in_lava
+    type: bool
+    range: [0, 1]
+    doc: "1 on the step the agent enters a lava tile, which ends the episode in failure."
+  - name: picked_up_key
+    type: bool
+    range: [0, 1]
+    doc: "1 on the single step the key is collected (walking onto the key tile). 0 thereafter."
+  - name: distance_to_goal
+    type: float
+    range: [0, 1]
+    doc: >
+      Manhattan distance from the agent to the goal, divided by 2*(size-1).
+      Cannot reach 0 without the key, because a locked goal acts as a wall.
+  - name: distance_to_key
+    type: float
+    range: [0, 1]
+    doc: >
+      Manhattan distance from the agent to the key, divided by 2*(size-1), and
+      exactly 0 once the key is held -- it measures distance to what is still
+      needed.
+  - name: step_cost
+    type: float
+    range: [0, 1]
+    doc: "Always 1.0, one per step. Give it a negative weight to pay for time."
+  - name: revisited_tile
+    type: bool
+    range: [0, 1]
+    doc: >
+      1 if the tile the agent occupies after moving was already visited this
+      episode (including standing still against a wall or a locked door).
+
+# The measurement. Agents may never modify this block, and the evaluator
+# imports no reward code -- enforced by tests/test_objective_independence.py.
+objective:
+  name: success_rate
+  direction: maximize
+  evaluator: grid_env:evaluate
+  budget:
+    episodes: 256
+    lanes: 32
+    max_steps: 100
+    slip_prob: 0.05
+
+# obs_dim = size*size position one-hot (64) + has_key (1) + relative key (2)
+# + relative goal (2) + the two distances (2) + 3x3 hazard patch (9)
+# + fraction of the step budget left (1) = 81.
+policy:
+  kind: discrete
+  n_actions: 4
+  obs_dim: 81
+
+trainer: ppo
