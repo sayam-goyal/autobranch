@@ -33,8 +33,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from autobranch.orchestrator import (
-    BranchEnv, Budget, SearchPolicy, ToolError, TreeView, child_branch_id,
-    dedup_key, initial_reward, seconds_left, validate_action,
+    RESERVE_SECONDS, BranchEnv, Budget, SearchPolicy, ToolError, TreeView,
+    child_branch_id, dedup_key, initial_reward, seconds_left, validate_action,
 )
 from autobranch.reward import RewardError, compile_reward, summarize
 from autobranch.spec import EnvironmentSpec
@@ -353,23 +353,35 @@ class BranchRunner:
         return {"ok": True, "reward": summarize(cfg)}
 
     def _tool_train(self, args, action) -> dict[str, Any]:
-        steps = int(args.get("steps") or DEFAULT_TRAIN_STEPS)
+        requested = int(args.get("steps") or DEFAULT_TRAIN_STEPS)
+        # The trainer has no wall-clock budget of its own, so the loop caps the
+        # step count instead: a branch must not spend the whole deadline inside
+        # one tool call and leave nothing for evaluation.
         left = seconds_left(self.env.deadline_ts, now=self.clock())
-        budget_s = min(MAX_TRAIN_SECONDS, max(60.0, left - 300.0))
+        requested = self._cap_steps(requested, left)
+        # `trainer.train(steps=...)` is a cumulative TARGET ("run until
+        # steps_done >= steps"), while an agent asking to "train 30k" means
+        # 30k more. Translating here keeps the agent's model natural and stops
+        # a second call on a resumed workspace from being a silent no-op.
+        target = self.state.steps_done + max(1, requested)
         started = self.clock()
         result = self.trainer(
             spec=self.spec,
             reward_config=self.state.reward_config,
-            steps=steps,
+            steps=target,
             workspace=self.workspace,
             resume=True,
-            max_seconds=budget_s,
         )
         elapsed = self.clock() - started
+        steps = requested
 
         self.state.steps_done = getattr(result, "steps_done", self.state.steps_done + steps)
         self.state.checkpoint = getattr(result, "checkpoint_path", self.state.checkpoint)
         metrics = dict(getattr(result, "metrics", {}) or {})
+        wall = float(getattr(result, "wall_seconds", 0.0) or elapsed or 0.0)
+        if wall > 0:
+            metrics["wall_seconds"] = wall
+            metrics["steps_per_second"] = steps / wall
         self.state.last_metrics = metrics
 
         if self.ledger is not None:
@@ -387,6 +399,30 @@ class BranchRunner:
         # Deliberately NOT returning throughput: steps are not progress.
         return {"ok": True, "steps_done": self.state.steps_done, "metrics": metrics,
                 "note": "training metrics are not progress; call evaluate to learn anything"}
+
+    def _cap_steps(self, steps: int, seconds_left_now: float) -> int:
+        """Shrink a requested step count to fit the remaining clock.
+
+        The trainer measures work in steps, not seconds, so the only lever the
+        loop has is the step count. The rate is learned from this branch's own
+        history rather than assumed: a GPU environment and a toy CPU one differ
+        by orders of magnitude, and a fixed guess would either waste the
+        deadline or refuse to train at all.
+        """
+        usable = max(0.0, seconds_left_now - RESERVE_SECONDS)
+        if usable <= 0:
+            return 0
+        rate = self.state.last_metrics.get("steps_per_second")
+        if not rate:
+            observed = self.state.last_metrics.get("wall_seconds")
+            if observed and self.state.steps_done:
+                rate = self.state.steps_done / max(1e-6, float(observed))
+        if not rate or rate <= 0:
+            # First call on this branch: cap by the per-call ceiling only, and
+            # let the measured rate tighten it from the second call onward.
+            return min(steps, DEFAULT_TRAIN_STEPS * 4)
+        affordable = int(float(rate) * min(usable, MAX_TRAIN_SECONDS))
+        return max(1, min(steps, affordable))
 
     def _tool_evaluate(self, args, action) -> dict[str, Any]:
         if not self.state.checkpoint:

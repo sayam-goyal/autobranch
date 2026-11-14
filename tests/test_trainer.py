@@ -354,6 +354,17 @@ def test_resume_records_a_reward_change_as_lineage(spec: EnvironmentSpec, tmp_pa
     assert lineage[1]["at_step"] == STEPS_PER_ITER
 
 
+def test_a_fresh_run_does_not_interleave_with_an_old_metrics_stream(
+    spec: EnvironmentSpec, tmp_path
+) -> None:
+    """Steps must increase monotonically down metrics.jsonl, always."""
+    train(spec, REWARD, steps=2 * STEPS_PER_ITER, workspace=tmp_path, resume=False, hyper=FAST)
+    train(spec, REWARD, steps=STEPS_PER_ITER, workspace=tmp_path, resume=False, hyper=FAST)
+    steps = [line["step"] for line in Workspace(tmp_path).read_metrics()]
+    assert steps == [STEPS_PER_ITER]
+    assert list(tmp_path.glob("metrics.*.jsonl")), "the previous stream was discarded, not archived"
+
+
 def test_malformed_reward_surfaces_as_reward_error(spec: EnvironmentSpec, tmp_path) -> None:
     """The agent loop feeds this back as a correction turn, so it must not be swallowed."""
     with pytest.raises(RewardError) as excinfo:

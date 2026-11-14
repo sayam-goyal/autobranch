@@ -130,13 +130,17 @@ def bundle_urls(url: str) -> list[str]:
 def fetch_url(
     url: str,
     *,
-    max_bytes: int = MAX_BUNDLE_BYTES,
+    max_bytes: int | None = None,
     opener: Callable[..., Any] | None = None,
 ) -> bytes:
     """Download a zip, refusing to buffer more than `max_bytes`.
 
-    `opener` is an injection seam so tests never touch the network.
+    `opener` is an injection seam so tests never touch the network. The cap
+    defaults at call time, not at definition time, so a test can lower
+    `MAX_BUNDLE_BYTES` without having to allocate 64 MiB to prove the cap
+    works.
     """
+    max_bytes = MAX_BUNDLE_BYTES if max_bytes is None else max_bytes
     open_url = opener or urllib.request.urlopen
     chunks: list[bytes] = []
     total = 0
@@ -163,10 +167,11 @@ def decode_bundle(
     *,
     bundle_b64: str | None = None,
     bundle_url: str | None = None,
-    max_bytes: int = MAX_BUNDLE_BYTES,
+    max_bytes: int | None = None,
     opener: Callable[..., Any] | None = None,
 ) -> bytes:
     """Resolve either bundle source to zip bytes."""
+    max_bytes = MAX_BUNDLE_BYTES if max_bytes is None else max_bytes
     if bool(bundle_b64) == bool(bundle_url):
         raise SubmissionError(
             ["give exactly one of bundle_b64 (an uploaded .zip) or bundle_url"]
@@ -202,7 +207,7 @@ def decode_bundle(
     return data
 
 
-def extract_bundle(data: bytes, dest: str, *, max_bytes: int = MAX_EXTRACTED_BYTES) -> str:
+def extract_bundle(data: bytes, dest: str, *, max_bytes: int | None = None) -> str:
     """Unpack a bundle zip into `dest` and return the directory it unpacked to.
 
     Entries are vetted before anything is written: an absolute path or a `..`
@@ -210,6 +215,7 @@ def extract_bundle(data: bytes, dest: str, *, max_bytes: int = MAX_EXTRACTED_BYT
     uncompressed total is checked against `max_bytes` because the compressed
     size says nothing about it.
     """
+    max_bytes = MAX_EXTRACTED_BYTES if max_bytes is None else max_bytes
     try:
         archive = zipfile.ZipFile(_BytesReader(data))
     except zipfile.BadZipFile as exc:
@@ -310,30 +316,31 @@ def check_env(spec: EnvironmentSpec, bundle_dir: str) -> tuple[list[str], list[s
 
     declared = {_dist_to_module(p) for p in spec.image.pip}
     before = set(sys.modules)
+    env = None
     try:
-        env = load_env(spec.entrypoint, search_path=bundle_dir)
-    except ModuleNotFoundError as exc:
-        missing = (exc.name or "").split(".")[0]
-        if missing in declared:
-            return [], [
-                f"environment not stepped here (needs {missing}, declared in image.pip); "
-                "the branch container will"
-            ]
-        return [
-            f"entrypoint {spec.entrypoint!r}: no module named {missing!r}. Declare it in "
-            "image.pip if it is a dependency, or fix the entrypoint."
-        ], []
-    except SyntaxError as exc:
-        return [f"entrypoint {spec.entrypoint!r}: {exc}"], []
-    except Exception as exc:  # noqa: BLE001 - any construction failure is a submission error
-        return [f"entrypoint {spec.entrypoint!r} failed: {type(exc).__name__}: {exc}"], []
-    finally:
-        _forget_bundle_modules(before, bundle_dir)
+        try:
+            env = load_env(spec.entrypoint, search_path=bundle_dir)
+        except ModuleNotFoundError as exc:
+            missing = (exc.name or "").split(".")[0]
+            if missing in declared:
+                return [], [
+                    f"environment not stepped here (needs {missing}, declared in image.pip); "
+                    "the branch container will"
+                ]
+            return [
+                f"entrypoint {spec.entrypoint!r}: no module named {missing!r}. Declare it in "
+                "image.pip if it is a dependency, or fix the entrypoint."
+            ], []
+        except SyntaxError as exc:
+            return [f"entrypoint {spec.entrypoint!r}: {exc}"], []
+        except Exception as exc:  # noqa: BLE001 - any construction failure is a submission error
+            return [f"entrypoint {spec.entrypoint!r} failed: {type(exc).__name__}: {exc}"], []
 
-    try:
-        found = validate_env(env, spec)
-    except Exception as exc:  # noqa: BLE001 - a validator crash is still a bad bundle
-        return [f"validate_env crashed on this environment: {type(exc).__name__}: {exc}"], []
+        try:
+            found = validate_env(env, spec)
+        except Exception as exc:  # noqa: BLE001 - a validator crash is still a bad bundle
+            return [f"validate_env crashed on this environment: {type(exc).__name__}: {exc}"], []
+        return blocking(found), [p for p in found if p.startswith(ADVISORY)]
     finally:
         close = getattr(env, "close", None)
         if callable(close):
@@ -341,8 +348,7 @@ def check_env(spec: EnvironmentSpec, bundle_dir: str) -> tuple[list[str], list[s
                 close()
             except Exception:  # noqa: BLE001 - a noisy close must not fail a submission
                 pass
-
-    return blocking(found), [p for p in found if p.startswith(ADVISORY)]
+        _forget_bundle_modules(before, bundle_dir)
 
 
 def _forget_bundle_modules(before: set[str], bundle_dir: str) -> None:

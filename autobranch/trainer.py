@@ -293,6 +293,24 @@ class Workspace:
         with self.metrics.open("a") as fh:
             fh.write(json.dumps(line, sort_keys=True) + "\n")
 
+    def rotate_metrics(self) -> Path | None:
+        """Move an existing metrics stream aside before a from-scratch run.
+
+        A restart that appends to the old stream makes `step` jump backwards
+        halfway down the file, and every reader -- plots, pruning, the
+        frontend -- silently misreads it. Keep the old one; just not here.
+        """
+        if not self.metrics.exists():
+            return None
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        archived = self.root / f"metrics.{stamp}.jsonl"
+        i = 1
+        while archived.exists():
+            archived = self.root / f"metrics.{stamp}.{i}.jsonl"
+            i += 1
+        os.replace(self.metrics, archived)
+        return archived
+
     def read_metrics(self) -> list[dict[str, Any]]:
         if not self.metrics.exists():
             return []
@@ -469,6 +487,8 @@ def train(
     optimizer = torch.optim.Adam(net.parameters(), lr=hyp.lr, eps=1e-5)
 
     state = ws.read_state() if resume else {}
+    if not resume:
+        ws.rotate_metrics()
     steps_done = 0
     iteration = 0
     prior_wall = 0.0
@@ -495,6 +515,13 @@ def train(
     # episodes from a seed derived from the step count: reproducible, and
     # distinct from the seeds already consumed.
     obs = _to_matrix(env.reset(seed=seed + steps_done), n_envs)
+    # Potential shaping keeps the previous signal value, so a new episode must
+    # start without one or its first step fires a jolt measured against the
+    # last episode's final state. Known limitation: lanes auto-reset
+    # independently and `CompiledReward` has no per-lane reset, so a lane that
+    # restarts mid-collection takes one such jolt. It is bounded by the signal
+    # range and identical for every reward config being compared, which is why
+    # it is a comment here rather than a hack in the reward compiler.
     compiled.reset_episode_state()
 
     obs_dim = obs.shape[1]

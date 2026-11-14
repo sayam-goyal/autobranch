@@ -112,7 +112,13 @@
   }
 
   function fmtClock(ts) {
-    var d = new Date(ts);
+    // `ts` is an ISO string from the mock fixture but a float epoch in
+    // SECONDS from the API (registry.api_payload). A bare new Date(seconds)
+    // renders every live log line as 1970, so normalise here rather than
+    // changing the API contract, which is "exactly api_payload".
+    var d = typeof ts === "number"
+      ? new Date(ts < 1e12 ? ts * 1000 : ts)
+      : new Date(ts);
     if (isNaN(d.getTime())) { return "--:--:--"; }
     function pad(n) { return (n < 10 ? "0" : "") + n; }
     return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
