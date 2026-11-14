@@ -1590,13 +1590,14 @@
       f("log-count").textContent = (run.events || []).length + " events";
       updateNav();
 
-      /* First paint only: centre the canvas on the tree rather than opening
-         hard against the left edge of a wide forest. */
+      /* First paint only: bring the best branch into view rather than opening
+         hard against a corner of a wide canvas. */
       if (!painted) {
         painted = true;
-        var layout = svg.__layout;
-        if (layout) {
-          treeScroll.scrollLeft = Math.max(0, (layout.width - treeScroll.clientWidth) / 2);
+        if (state.selected) {
+          scrollNodeIntoView(treeScroll, state.selected);
+        } else if (svg.__layout) {
+          treeScroll.scrollLeft = Math.max(0, (svg.__layout.width - treeScroll.clientWidth) / 2);
         }
       }
     }

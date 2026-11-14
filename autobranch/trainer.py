@@ -76,6 +76,12 @@ class PPOHyper:
     hidden: tuple[int, ...] = (128, 128)
     checkpoint_interval: int = 0  # env steps; 0 -> one checkpoint per collection
     device: str = "cpu"
+    #: Intra-op threads. One by default on purpose: the policies here are small
+    #: dense nets where BLAS threading costs more than it buys, and a branch
+    #: declaring `cpu: 2` in its manifest should not quietly spawn eight
+    #: threads and fight every sibling branch on the same host. `None` leaves
+    #: the process default alone.
+    torch_threads: int | None = 1
     env_kwargs: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -442,6 +448,8 @@ def train(
     hyp = PPOHyper.parse(hyper)
     ws = Workspace(Path(workspace))
     device = torch.device(hyp.device)
+    if hyp.torch_threads:
+        torch.set_num_threads(int(hyp.torch_threads))
     t0 = time.monotonic()
 
     random.seed(seed)
@@ -528,6 +536,7 @@ def train(
         finished_lengths: list[int] = []
         finished_signals: list[np.ndarray] = []
         signal_step_means: dict[str, float] = {name: 0.0 for name in signal_names}
+        composed_reward_mean = 0.0
 
         for t in range(hyp.n_steps):
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
@@ -551,6 +560,11 @@ def train(
 
             terminated = _flags(result.terminated, n_envs)
             truncated = _flags(result.truncated, n_envs)
+            # Episode returns are reported from the *composed* reward only. The
+            # bootstrap below is a value-target correction, not something the
+            # environment paid out, and folding it into the reported return
+            # inflates the number a branch is read by.
+            composed = reward.copy()
             if truncated.any() and INFO_FINAL_OBS in result.info:
                 # A time limit is not a terminal state: bootstrap it, or the
                 # value function learns that running out of clock is death.
@@ -571,7 +585,8 @@ def train(
             for j, name in enumerate(signal_names):
                 signal_step_means[name] += float(step_signals[:, j].mean()) / hyp.n_steps
 
-            ep_return += reward
+            composed_reward_mean += float(composed.mean()) / hyp.n_steps
+            ep_return += composed
             ep_length += 1
             ep_signal_sums += step_signals
             if done.any():
@@ -690,7 +705,7 @@ def train(
             "early_stop_kl": stop_early,
             **{k: round(v, 8) for k, v in stats.items()},
             "explained_variance": explained_var,
-            "reward_mean_per_step": float(buf_rewards.mean()),
+            "reward_mean_per_step": round(composed_reward_mean, 8),
             "episodes": len(finished_returns),
             "episode_return_mean": float(np.mean(finished_returns)) if finished_returns else None,
             "episode_length_mean": float(np.mean(finished_lengths)) if finished_lengths else None,
@@ -706,6 +721,9 @@ def train(
                     (hyp.n_steps * n_envs) / max(1e-9, time.monotonic() - iter_start), 1
                 ),
                 "n_envs": n_envs,
+                # Includes the truncation bootstrap, so it is the quantity GAE
+                # actually saw -- useful for debugging, not a return.
+                "value_target_reward_mean": float(buf_rewards.mean()),
             },
         }
         ws.append_metrics(line)
