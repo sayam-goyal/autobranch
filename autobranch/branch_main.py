@@ -49,8 +49,15 @@ MAX_ITERATIONS = 40
 
 @dataclass
 class BranchState:
-    """Everything this branch knows about itself, rebuilt on resume."""
+    """Everything this branch knows about itself, rebuilt on resume.
 
+    `branch_id` is stamped so a loaded file can say whose it is. A fork
+    mounts the parent's snapshot as its own /workspace, so this file arrives
+    with the inherited weights, and without the stamp a child cannot tell
+    "my own state, resuming" from "my parent's state, which is not mine".
+    """
+
+    branch_id: str = ""
     reward_config: dict[str, Any] | None = None
     scores: list[float] = field(default_factory=list)
     steps_done: int = 0
@@ -70,6 +77,7 @@ class BranchState:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "branch_id": self.branch_id,
             "reward_config": self.reward_config,
             "scores": self.scores,
             "steps_done": self.steps_done,
@@ -142,8 +150,46 @@ class BranchRunner:
         self.max_iterations = max_iterations
         self.state = BranchState.load(self._state_path)
         self._usage_mark = None
-        if env.reward_config and not self.state.reward_config:
+        self._claim_state(env)
+
+    def _claim_state(self, env) -> None:
+        """Decide whether the state file on disk is ours, or our parent's.
+
+        A fork gets the parent's /workspace mounted (`forking.py` calls
+        `child.mount_image(workspace, snapshot)`), so branch_state.json
+        arrives alongside the inherited weights. The weights and the step
+        count really are continuous -- the child goes on training the
+        parent's policy -- but everything describing *which branch this is*
+        belongs to the parent. The reward above all: a child that keeps its
+        parent's reward retrains what the parent already measured, and the
+        search silently stops searching while still paying for a GPU per
+        branch. That is not hypothetical; it is what run-25ed75aa0a did
+        across four branches before this existed.
+        """
+        if self.state.branch_id:
+            inherited = self.state.branch_id != env.branch_id
+        elif env.reward_config and self.state.reward_config:
+            # Written before the stamp existed. The fork tool refuses a
+            # reward that some branch already measured, so a child's env
+            # reward never equals the parent's -- a mismatch here means we
+            # booted from a parent rather than from our own last life.
+            inherited = dedup_key(env.reward_config) != dedup_key(self.state.reward_config)
+        else:
+            inherited = False
+
+        if inherited:
             self.state.reward_config = env.reward_config
+            self.state.scores = []
+            self.state.evals_without_improvement = 0
+            self.state.children = 0
+            self.state.snapshots = []
+            self.state.spend_usd = 0.0
+            self.state.tokens = 0
+            self.state.activity = ""
+            self.state.last_metrics = {}
+        elif env.reward_config and not self.state.reward_config:
+            self.state.reward_config = env.reward_config
+        self.state.branch_id = env.branch_id
 
     # -- paths ----------------------------------------------------------
 
