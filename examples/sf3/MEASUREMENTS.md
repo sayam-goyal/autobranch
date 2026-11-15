@@ -69,6 +69,49 @@ unless `SDL_VIDEODRIVER=dummy` is set. Installing the SDL runtime libraries
 looks like the fix and is not; the emulator image copies the predecessor
 project's working package list and three environment variables verbatim.
 
+## Probe 3 — will the workspace give 24 lanes at once?
+
+Evaluation is the only thing in this run that produces evidence, and
+concurrency is the only lever on its wall clock: a match is ~1600 *sequential*
+decisions, so 24 lanes score 24 matches in one batch while 8 lanes take three.
+
+```
+requested 24, booted 24 in 32 s wall
+per-lane boot    min 19.0 s   max 27.1 s
+```
+
+**Decided:** `objective.budget.concurrency = 24`, equal to `matches`. One
+batch, ~27 minutes, instead of three batches and ~80. Probed rather than
+assumed because the code degrades gracefully to more batches if fewer lanes
+come up -- so a limit here would not have failed loudly, it would just have
+cost an hour at the first evaluate call.
+
+## Correction — 400 decisions per lane resolves no rounds
+
+Recorded because I got this wrong in the live run and the reasoning is an easy
+one to repeat.
+
+At 600 decisions per lane a collection produced **6 round wins across 8 lanes**.
+I read that as "one round per 800 lane-decisions", treated it as a rate, and
+cut the window to 400 to buy gradient steps. The next iteration reported
+**rounds 0/0** and the return mean fell from +0.52 to +0.02.
+
+Round length is a **threshold, not a rate**. A round needs some minimum number
+of decisions *within a single lane* to reach a KO or the clock; below that no
+lane finishes one however many lanes are running, so the average was describing
+a quantity that cannot be averaged.
+
+The cost is not just a weaker signal. `round_won` and `round_lost` are the only
+reward terms tied to the objective, so such an iteration trains on shaping
+alone -- and the agent sees `rounds_won: 0`, which looks like a reward problem
+and is a window problem. It would rewrite a good reward in response, corrupting
+the search rather than slowing it.
+
+**Decided:** back to 600, and the condition is now loud: a collection with no
+round outcomes prints a warning naming the cause and carries
+`shaping_only: true` in its metrics line. The evidence is kept in
+`shaping_only_iteration.jsonl`.
+
 ## Throughput budget this implies
 
 ```
