@@ -389,10 +389,12 @@ def test_trainer_for_dispatches_on_the_manifest(spec: EnvironmentSpec) -> None:
 
     import dataclasses
 
+    # `grpo_lora` used to raise NotImplementedError here. It is implemented in
+    # autobranch/posttrain.py now, so the dispatch must return a callable --
+    # the "must posttrain <model>" constraint depends on this resolving.
     grpo = dataclasses.replace(spec, trainer="grpo_lora")
-    with pytest.raises(NotImplementedError) as excinfo:
-        trainer_for(grpo)
-    assert "P3" in str(excinfo.value), "the error must name the phase it arrives in"
+    assert callable(trainer_for(grpo))
+    assert trainer_for(grpo) is not train
 
     custom = dataclasses.replace(spec, trainer="custom:tests.test_trainer:fake_trainer")
     assert trainer_for(custom) is fake_trainer

@@ -175,10 +175,39 @@ class CheckpointPolicy:
         return result[0] if single else result
 
 
+#: `arch.kind` values `CheckpointPolicy` can rebuild as a dense MLP.
+MLP_ARCH_KINDS = ("discrete", "continuous")
+
+#: What `grpo_lora` writes. A LoRA adapter over a base model is not a dense
+#: MLP, so `CheckpointPolicy` cannot rebuild it and `lm_policy` is asked
+#: instead. The dispatch is on this value and nothing else -- never on the
+#: `trainer` field, which records who *wrote* the checkpoint rather than what
+#: shape it is, and which a hand-edited file could disagree with.
+LM_LORA_ARCH_KIND = "lm_lora_discrete"
+
+
 def load_checkpoint_policy(
     checkpoint_path: str | os.PathLike, *, device: str = "cpu"
-) -> CheckpointPolicy:
-    """Load weights only. No optimiser, no reward config, no hyperparameters."""
+) -> "CheckpointPolicy | Any":
+    """Load weights only. No optimiser, no reward config, no hyperparameters.
+
+    Two policy shapes reach this function, and the checkpoint's own `arch.kind`
+    decides which loader runs. A PPO checkpoint is a dense MLP, rebuilt here. A
+    `grpo_lora` checkpoint is a LoRA adapter over a base model, rebuilt by
+    `lm_policy.load_policy`, which returns the same duck type -- callable,
+    `reseed`, `deterministic` -- so an environment's evaluator never learns
+    which trainer produced the thing it is scoring.
+
+    `lm_policy` exists precisely so this import is allowed: it holds the
+    inference half of post-training and imports no reward code, while
+    `posttrain` imports `autobranch.reward` and so may never be reached from
+    here. `tests/test_objective_independence.py` walks the import graph from
+    this module and would fail on `posttrain`; the point of that wall is that
+    an agent which can reach its own measurement can make itself look good
+    without getting good. Dispatching through a dynamic import would have hidden
+    the edge from the graph walker rather than respecting it, which is why the
+    import below is a plain one.
+    """
     path = Path(checkpoint_path)
     if not path.exists():
         raise ObjectiveError(f"no checkpoint at {path}")
@@ -189,6 +218,18 @@ def load_checkpoint_policy(
     if not isinstance(payload, dict) or "arch" not in payload or "policy" not in payload:
         raise ObjectiveError(
             f"{path} is not an autobranch checkpoint (expected 'arch' and 'policy' keys)"
+        )
+    kind = str((payload.get("arch") or {}).get("kind", ""))
+    if kind == LM_LORA_ARCH_KIND:
+        from autobranch import lm_policy
+
+        return lm_policy.load_policy(path, device=device)
+    if kind not in MLP_ARCH_KINDS:
+        raise ObjectiveError(
+            f"{path} records arch.kind={kind!r}, which this loader does not know how to rebuild "
+            f"(expected one of {', '.join(MLP_ARCH_KINDS)}, or {LM_LORA_ARCH_KIND!r}). Refusing "
+            "rather than guessing: a policy rebuilt to the wrong shape would score as a broken "
+            "one and be read as a bad reward."
         )
     return CheckpointPolicy(payload["arch"], payload["policy"], device=device)
 
