@@ -136,6 +136,12 @@ class FullHyper:
     #: all of its wall clock in backward passes over correlated samples from
     #: the same few matches.
     train_subsample: int = 256
+    #: Export every N iterations, and always before returning. A full export is
+    #: ~17 GiB across four safetensors shards and cost ~60 s of every 772 s
+    #: iteration. The export is only *needed* when train() returns, because
+    #: that is when the evaluator loads it; in between it is crash insurance,
+    #: and 5 is what the reproduction target used for the same reason.
+    save_every: int = 5
     #: Where the HF export and a mirrored metrics log go. Empty means derive it
     #: from AUTOBRANCH_DATA_ROOT/RUN_ID/BRANCH_ID, which is what a real branch
     #: wants; a probe or a local test passes an explicit path.
@@ -157,12 +163,15 @@ class FullHyper:
     #: default so his configuration is reachable, not imposed: the reward DSL
     #: owns shaping, this only sets the return's horizon.
     discount_half_life_frames: float = 3600.0
-    #: ~6.7 game frames per decision measured on the real ROM, so 600
-    #: decisions is roughly 67 s of game time -- about one round. Chosen so a
-    #: round *outcome* usually lands inside the window: a collection that
-    #: truncates before anyone wins teaches only shaping, and the whole point
-    #: of the objective is that shaping is not what counts.
-    max_decisions_per_match: int = 600
+    #: Collection is ~80% of an iteration's wall clock -- 600 decisions at the
+    #: measured ~1.0 s each dominated the 772 s first iteration -- so this is
+    #: the knob that buys gradient steps. 400 rather than 600 because the first
+    #: real collection produced 6 round wins across 8 lanes at 600, i.e. a round
+    #: resolves in roughly 800 lane-decisions, so 400 still lands outcomes in
+    #: the window while cutting ~3.5 minutes per iteration. Going much lower
+    #: would leave only shaping in the signal, and shaping is not what the
+    #: objective counts.
+    max_decisions_per_match: int = 400
     grad_checkpointing: bool = True
     device_map: str = ""  # "" = single device; "auto" splits layers across GPUs
     dtype: str = "bfloat16"
@@ -688,7 +697,10 @@ def train(
                 with durable_metrics.open("a") as fh:
                     fh.write(payload)
             state_path.write_text(json.dumps(progress))
-            save_hf_export(model, processor, export_dir)
+            # Crash insurance only; the export that matters is written below,
+            # before returning, because that is when the evaluator reads it.
+            if hyp.save_every and iteration % hyp.save_every == 0:
+                save_hf_export(model, processor, export_dir)
             last = line
     finally:
         if env is None and environment is not None:
@@ -696,6 +708,11 @@ def train(
                 environment.close()
             except Exception:  # noqa: BLE001 - teardown must not mask a result
                 pass
+
+    # Always export before returning: `train` returning is the signal that a
+    # checkpoint exists to be scored, and an evaluator that loads a stale
+    # export would measure a policy from several iterations ago.
+    save_hf_export(model, processor, export_dir)
 
     torch = _import_or_explain("torch", "torch>=2.2")
     checkpoint = ws / "checkpoints" / "latest.pt"

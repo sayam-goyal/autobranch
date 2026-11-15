@@ -79,7 +79,13 @@ objective:
     # per branch; 40 matches in both modes would have been 80 minutes a call.
     matches: 24
     difficulty: 8
-    concurrency: 8
+    # Equal to `matches`, deliberately. A match is ~1600 sequential decisions
+    # at ~1.0 s each (0.25 s emulator + ~0.75 s VL forward, both measured), so
+    # one match is ~27 minutes of wall clock and no amount of parallelism makes
+    # it shorter. Concurrency only decides how many run at once: at 8 lanes
+    # this budget took three batches and ~80 minutes, at 24 it takes one and
+    # ~27, for 24 extra 2-CPU sandboxes costing well under a dollar.
+    concurrency: 24
     # Stochastic only. The predecessor project's policy was competent while
     # sampling and won 0 of 100 at its mode, and that degeneracy was inherited
     # from the base model rather than caused by RL -- so the sampled number is
