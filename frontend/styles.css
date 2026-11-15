@@ -463,6 +463,8 @@ code, pre, .mono { font-family: var(--font-mono); }
 .badge-succeeded { color: var(--st-succeeded); }
 .badge-pending { color: var(--st-pending); }
 .badge-abandoned { color: var(--st-abandoned); }
+.badge-stopped { color: var(--st-abandoned); }
+.badge-unknown { color: var(--st-abandoned); }
 .badge-failed { color: var(--st-failed); }
 
 .dot {
@@ -479,6 +481,8 @@ code, pre, .mono { font-family: var(--font-mono); }
 .dot.st-succeeded { background: var(--st-succeeded); }
 .dot.st-pending { background: var(--st-pending); }
 .dot.st-abandoned { background: var(--st-abandoned); }
+.dot.st-stopped { background: var(--st-abandoned); }
+.dot.st-unknown { background: var(--fg-faint); }
 .dot.st-failed { background: var(--st-failed); }
 
 /* ── regions ───────────────────────────────────────────────────────────────

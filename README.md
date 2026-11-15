@@ -47,6 +47,57 @@ The manifest reports **both policy modes** — deterministic 0.996, stochastic
 0.836 — which exposed a 0.16 mode gap that a single-mode number would have
 hidden.
 
+## Why this rather than tuning a reward by hand
+
+Most RL effort goes into the reward, and most rewards are written by guessing,
+running for hours, squinting at a curve, and guessing again. Three things make
+that loop expensive, and this framework attacks each one.
+
+**The reward usually decides the outcome, and the right one is not guessable.**
+Measured, on real runs:
+
+| run | finding |
+|---|---|
+| Rocket League | `approach_ball` at 20 peaked at **0.599** then collapsed to **0.353** while its *training return rose twentyfold*; at 3 it reached **0.922** |
+| Street Fighter III | a potential-shaped reward beat a hand-tuned one by **24 points** at level 8 (79.0% vs 55.0%), at matched model size and configuration |
+| Tetris | the reward axis was a **null** — six configurations across two rewrites, all exactly **0.000** |
+
+The last row is the honest one. **Searching rewards does not always help**, and
+when it does not, the useful result is learning so cheaply: six Tetris arms cost
+**$4.51** to establish that the whole axis was flat, which redirected the effort
+to the thing that did matter (how the policy represents an action — 0.000 to
+0.994 on a *byte-identical* reward). A search that reports a null quickly is
+worth more than a hunch defended for a week.
+
+**A human tuning a reward is also choosing the scoreboard.** That is the failure
+mode nobody catches in themselves: you adjust the reward, the metric you are
+watching improves, and you cannot tell whether the policy got better or the
+measurement got friendlier. Here the two are *structurally* separated —
+environments emit **signals** (facts about a transition), agents compose rewards
+from those signals, and the objective is evaluated by code that imports no
+reward module at all. `tests/test_objective_independence.py` walks the import
+graph and fails if that is ever violated. An agent cannot make itself look good
+without getting good, because it has no path to the thing that judges it.
+
+**Exploring in parallel is usually too expensive to do properly.** A branch here
+is a Modal Sandbox forked from a filesystem snapshot, so a promising line is
+continued rather than restarted — the child inherits weights, optimizer state
+and history while writing nowhere the parent can see, and the parent keeps
+training. That makes "try six rewards from this checkpoint" cost six sandboxes
+for the remaining steps, not six runs from scratch.
+
+### What it does not do
+
+- It does not change the policy architecture. Branches mutate **rewards**; the
+  network comes from the manifest. The Tetris finding — representation beat
+  every reward — is exactly the kind of thing this search cannot find, and the
+  framework's job there was to rule out the axis it *can* search, fast.
+- It does not remove the need for a good objective. Everything rests on the
+  evaluator being the number you actually care about; a saturated or gameable
+  objective produces a confident, worthless winner.
+- It is not cheaper than one good guess. It is cheaper than ten bad ones, and it
+  tells you which you had.
+
 ## The environment contract
 
 An environment is a bundle: a directory, zip, or git URL with a manifest and

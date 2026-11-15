@@ -626,3 +626,66 @@ def test_the_module_alias_table_covers_the_usual_offenders():
     }
     for requirement, module in cases.items():
         assert server._dist_to_module(requirement) == module, requirement
+
+
+
+def test_the_frontend_knows_every_status_the_server_can_send():
+    """A status the UI does not know becomes a *live* one, and that is a lie.
+
+    `statusClass` returned "pending" for anything missing from STATUS_ORDER,
+    and `stopped` -- a real run state in RUN_STATES -- was missing. So four
+    stopped runs rendered as "starting", and since LIVE_STATES.pending is true
+    the UI also treated them as live: pulsing dots, polled forever. A terminal
+    run shown as a starting one is the most misleading default available.
+
+    This checks the two vocabularies against each other rather than spot-
+    checking `stopped`, because the next status added server-side would
+    reintroduce exactly this bug.
+    """
+    import pathlib
+    import re
+
+    from autobranch.registry import RUN_STATES, STATUSES
+
+    app_js = (pathlib.Path(__file__).resolve().parents[1] / "frontend" / "app.js").read_text()
+    block = re.search(r"var STATUS_ORDER = \{(.*?)\};", app_js, re.S)
+    assert block, "STATUS_ORDER not found"
+    known = set(re.findall(r"(\w+):", block.group(1)))
+
+    missing = (set(RUN_STATES) | set(STATUSES)) - known
+    assert not missing, f"the UI cannot name these server statuses: {sorted(missing)}"
+
+    # And the fallback must be terminal, not a live state.
+    assert 'STATUS_ORDER[status] === undefined ? "unknown"' in app_js
+    live = re.search(r"var LIVE_STATES = \{(.*?)\};", app_js, re.S)
+    assert "unknown" not in live.group(1), "the unknown fallback must not be live"
+
+
+def test_stopped_and_unknown_have_terminal_styling():
+    """They are rendered with classes, so the classes have to exist -- an
+    unstyled status falls back to whatever the default dot colour is, which
+    reads as neither alive nor finished."""
+    import pathlib
+
+    css = (pathlib.Path(__file__).resolve().parents[1] / "frontend" / "styles.css").read_text()
+    for cls in (".badge-stopped", ".badge-unknown", ".dot.st-stopped", ".dot.st-unknown"):
+        assert cls in css, cls
+
+
+def test_frontend_assets_are_revalidated_not_heuristically_cached(client):
+    """A shipped frontend fix must reach the browser without a hard refresh.
+
+    FileResponse sends ETag and Last-Modified but no Cache-Control, so a
+    browser falls back to *heuristic* freshness and can serve a stale asset
+    without asking. A status-rendering fix was deployed and the page kept
+    showing the old labels for exactly this reason.
+
+    `no-cache` means revalidate, not "do not store" -- the ETag still makes a
+    reload a 304 with no body, so this costs a round trip and not bandwidth.
+    """
+    for asset in ("/", "/app.js", "/styles.css"):
+        response = client.get(asset)
+        assert response.status_code == 200, asset
+        cache = response.headers.get("cache-control", "")
+        assert "no-cache" in cache, f"{asset} sent {cache!r}"
+        assert response.headers.get("etag"), f"{asset} has no ETag to revalidate against"
