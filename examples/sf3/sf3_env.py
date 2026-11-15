@@ -7,10 +7,17 @@ that drives it. `step()` is an HTTP round trip.
 
 That has a consequence worth stating plainly, because it shapes every number
 this environment produces: lanes are expensive and slow, not free. A lane costs
-a sandbox and a boot (tens of seconds through the attract screens and character
-select), and a step costs a request plus the frames the macro action consumes.
-So lanes are created once and reused across episodes within a match, matches
-run concurrently, and a lane that dies is replaced rather than retried in place.
+a sandbox and a ~22 s boot through the attract screens, character select and
+super-art select, and a step costs a request plus the frames the macro action
+consumes (~0.25 s measured). Matches therefore run concurrently, and a lane
+that fails to boot is dropped rather than retried in place.
+
+**One lane is one match.** `LocalSfiiiAdapter` raises on a second reset, so a
+lane cannot be reused -- and reusing one is worse than it sounds: `/reset`
+would hand back the cached first observation while the emulator sat hundreds of
+decisions deep in a finished match, so the frames and the signals would
+disagree with each other and with the game, silently. Every `reset()` therefore
+replaces its lanes.
 
 **The observation is a frame plus a short state line.** Qwen3-VL-8B-Instruct is
 a vision-language model and Hinh fed it frames, so this does too: the
@@ -162,7 +169,12 @@ class EmulatorLane:
             app=app,
             cpu=2,
             memory=4096,
-            timeout=60 * 60,
+            # A branch killed outright never runs `close()`, so this timeout is
+            # what reaps the lane. One match is ~8 minutes of wall clock and a
+            # collection ~2.5, so 20 minutes is generous for the work and caps
+            # what an orphan can cost. An hour, as this was, left nine lanes
+            # billing after the first branch was replaced.
+            timeout=20 * 60,
             encrypted_ports=[8000],
             volumes={"/rom": modal.Volume.from_name(ROM_VOLUME)},
             env={
@@ -247,9 +259,27 @@ class Sf3Env:
 
     # ---- lifecycle -----------------------------------------------------
 
-    def _ensure_lanes(self) -> None:
-        if self.lanes:
+    def _ensure_lanes(self, *, fresh: bool = False) -> None:
+        """Boot `n_envs` lanes, replacing any that exist when `fresh`.
+
+        Lanes are **not** reusable across matches, and this is the emulator's
+        constraint rather than a choice: `LocalSfiiiAdapter` raises on a second
+        reset ("create a new environment"), so one sandbox is one match. Reusing
+        a lane would have `/reset` hand back the cached first observation while
+        the emulator sat 600 decisions deep in a finished match -- the frames
+        and the signals would disagree with each other and with the game, and
+        nothing would raise.
+
+        The cost is a boot per collection, ~22 s measured, paid concurrently
+        across lanes against a ~150 s collection. That is the right trade: the
+        alternative is training on observations that do not describe the state
+        the actions were taken in.
+        """
+        if self.lanes and not fresh:
             return
+        for lane in self.lanes:
+            lane.terminate()
+        self.lanes = []
         import modal
 
         self._app = modal.App.lookup(EMULATOR_APP, create_if_missing=True)
@@ -290,7 +320,8 @@ class Sf3Env:
     def reset(self, *, seed: int | None = None):
         if seed is not None:
             self.seed = int(seed)
-        self._ensure_lanes()
+        # Every reset is a new match, so every reset is a new set of lanes.
+        self._ensure_lanes(fresh=True)
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=len(self.lanes)) as pool:
