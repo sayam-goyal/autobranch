@@ -7,9 +7,9 @@ a restarted session must be able to continue without re-deriving anything.
 
 | what | value |
 |---|---|
-| run id | **`run-12845b4e57`** |
-| launched | 21:40:28 PST, epoch **1794720028** |
-| training deadline (5.5 h) | epoch **1794739828** ≈ 03:10 PST |
+| run id | **`run-4342abbaad`** |
+| launched | 21:49:39 PST, epoch **1794721779** |
+| training deadline (5.5 h) | epoch **1794741579** ≈ 03:20 PST |
 | 8-hour envelope ends | epoch **1794748800** ≈ 05:40 PST |
 | bundle | `examples/sf3` (sf3-ryu v1) |
 | objective | `win_rate_vs_cpu8`, maximize |
@@ -18,28 +18,36 @@ a restarted session must be able to continue without re-deriving anything.
 | max branches | 8 |
 | web UI | https://sf-hackathon--autobranch-web-dev.us-east.modal.run |
 
-**Dead run to ignore: `run-bf5c9b0ae9`.** Launched 21:37 without `--detach`,
-so the ephemeral app stopped when the local entrypoint returned and killed the
-root spawn. It sits at `pending` with zero branches forever. Not a crash — a
-lifetime. `launch.sh` now detaches.
+**Two superseded runs, both stopped, ignore in any analysis:**
+
+- `run-bf5c9b0ae9` (21:37) — launched without `--detach`, so the ephemeral app
+  stopped when the local entrypoint returned and killed the root spawn. Sits at
+  `pending` with zero branches forever: not a crash, a lifetime.
+- `run-12845b4e57` (21:40) — ran the pre-fix runtime. Replaced because its
+  evaluator would have loaded an 8.77B policy on **CPU** (never returning), and
+  because its env reused emulator lanes across collections, which the emulator
+  cannot do and does not complain about. Branch sandbox and nine orphaned lanes
+  terminated by hand.
+
+Both are the reason the probes exist: every one of those failures is silent.
 
 ## Commands
 
 ```bash
 # tree, scores, reward configs, stop reasons
-python examples/sf3/watch.py --run-id run-12845b4e57
+python examples/sf3/watch.py --run-id run-4342abbaad
 
 # ...plus the per-branch training curves off the Volume
-python examples/sf3/watch.py --run-id run-12845b4e57 --metrics
+python examples/sf3/watch.py --run-id run-4342abbaad --metrics
 
 # loop every two minutes
-python examples/sf3/watch.py --run-id run-12845b4e57 --loop 120 --metrics
+python examples/sf3/watch.py --run-id run-4342abbaad --loop 120 --metrics
 
 # the framework's own status
-modal run app.py::cli_status --run-id run-12845b4e57
+modal run app.py::cli_status --run-id run-4342abbaad
 
 # build the artifact (weights + lineage + losers), after training ends
-modal run app.py::cli_finalize --run-id run-12845b4e57
+modal run app.py::cli_finalize --run-id run-4342abbaad
 ```
 
 ## Where the data is
@@ -48,8 +56,8 @@ Everything needed for post-hoc analysis is on the `autobranch-data` Volume,
 **not** in a sandbox:
 
 ```
-runs/run-12845b4e57/<branch>/metrics.jsonl    one line per training iteration
-runs/run-12845b4e57/<branch>/hf/              the full HF checkpoint (~16 GiB)
+runs/run-4342abbaad/<branch>/metrics.jsonl    one line per training iteration
+runs/run-4342abbaad/<branch>/hf/              the full HF checkpoint (~16 GiB)
 ```
 
 `/workspace` is sandbox-local, so anything left there dies with its branch.
@@ -68,6 +76,7 @@ Registry state (tree, reward configs, scores, events, spend) lives in
 | `zero_variance_group_fraction` | well below 1.0 | a group whose members all score the same has no advantage for any member. Near 1.0 is **not learning**, not learning slowly. |
 | `entropy` | > ~0.3 nats | mode collapse. The predecessor policy won 0/100 at its mode while competent while sampling, and that came from the base model. `entropy_coef` is 0.01 to resist it. |
 | `invalid_move_rate` | low and falling | the policy keeps picking moves it cannot perform (EX without meter). Real cost, but masked tokens mean nothing is unparseable. |
+| `device` in a score's detail | `cuda` | the policy was scored on CPU. For an 8.77B VL model that is not slow, it is "never returns". |
 | objective score | rising | a rising *training return* is not evidence. The predecessor saw a policy peak at 0.599 then collapse to 0.353 while its return rose twentyfold. |
 
 ## Known failure modes and the response
