@@ -23,6 +23,7 @@ Everything stored is JSON-serialisable, because it travels through a
 `modal.Dict` and out of an HTTP endpoint unchanged.
 """
 
+import copy
 import threading
 import time
 import uuid
@@ -177,6 +178,12 @@ class BranchRecord:
     # The checkpoint the branch would ship, and the provenance of its latest
     # objective score. Carried here so consolidation never has to guess.
     checkpoint: str | None = None
+    # The durable copy of the best-scoring weights, on the Volume. Distinct
+    # from `checkpoint`, which tracks wherever the trainer last wrote and so
+    # reverts to a sandbox-local path on every train call -- a branch that
+    # kept training after its best score left `checkpoint` naming a file that
+    # died with its sandbox. Prefer this one when shipping weights.
+    published_checkpoint: str | None = None
     score_command: str = ""
     score_detail: dict[str, Any] = field(default_factory=dict)
 
@@ -211,6 +218,7 @@ class BranchRecord:
             "activity": self.activity,
             "activity_since": float(self.activity_since),
             "checkpoint": self.checkpoint,
+            "published_checkpoint": self.published_checkpoint,
             "score_command": self.score_command,
             "score_detail": dict(self.score_detail),
         }
@@ -235,6 +243,7 @@ class BranchRecord:
             activity=raw.get("activity", "") or "",
             activity_since=float(raw.get("activity_since", 0.0)),
             checkpoint=raw.get("checkpoint"),
+            published_checkpoint=raw.get("published_checkpoint"),
             score_command=raw.get("score_command", "") or "",
             score_detail=dict(raw.get("score_detail") or {}),
         )
@@ -572,12 +581,31 @@ class Registry:
         self.backend.put(key, rec.to_dict())
         return rec
 
-    def append_score(self, run_id: str, branch_id: str, step: int, score: float) -> BranchRecord:
-        """Append one objective evaluation to a branch's trajectory."""
+    def append_score(
+        self,
+        run_id: str,
+        branch_id: str,
+        step: int,
+        score: float,
+        reward: dict[str, Any] | None = None,
+    ) -> BranchRecord:
+        """Append one objective evaluation to a branch's trajectory.
+
+        `reward` is the reward configuration *in force when this score was
+        measured*, copied in rather than referenced. A branch's live
+        `reward_config` is the next thing it intends to try, so by the time
+        anyone reads the trajectory it no longer describes the earlier points
+        on it. Without this snapshot a finished run cannot answer the only
+        question worth asking of it -- which reward produced which score --
+        and the search's whole output becomes uninterpretable.
+        """
         rec = self.get_branch(run_id, branch_id)
         if rec is None:
             raise KeyError(f"{run_id}/{branch_id}")
-        scores = [*rec.scores, {"step": int(step), "score": float(score)}]
+        entry: dict[str, Any] = {"step": int(step), "score": float(score)}
+        if reward:
+            entry["reward"] = copy.deepcopy(reward)
+        scores = [*rec.scores, entry]
         return self.update_branch(run_id, branch_id, scores=scores)
 
     def add_spend(self, run_id: str, branch_id: str, usd: float, tokens: int = 0) -> BranchRecord:

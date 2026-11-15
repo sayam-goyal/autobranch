@@ -194,6 +194,52 @@ def test_unreachable_checkpoint_raises_rather_than_shipping_nothing(objective, t
         consolidate(payload, objective, out_dir=str(tmp_path))
 
 
+def test_ships_the_published_copy_when_training_moved_past_the_best_score(objective, tmp_path):
+    """Regression, SF3 run-25ed75aa0a / b0.1.1.1.
+
+    The winner published its best weights at step 72,000, trained on to
+    86,400 -- which reset `checkpoint` to a sandbox-local path -- then scored
+    equal, not better, so no second publish fired. The branch finished with
+    `checkpoint` naming a file inside a sandbox that no longer existed, and
+    consolidation refused to ship a run whose weights were sitting safely on
+    the Volume the whole time.
+    """
+    durable = tmp_path / "latest.pt"
+    durable.write_bytes(b"the-weights-that-scored")
+    payload = {
+        "run_id": "r", "env_name": "e", "objective": {"name": "o", "direction": "maximize"},
+        "spec": {}, "branches": [
+            {"branch_id": "b0.1.1.1", "reward_config": {},
+             "checkpoint": "/workspace/checkpoints/latest.pt",   # dead with the sandbox
+             "published_checkpoint": str(durable),               # survives on the Volume
+             "scores": [{"step": 72000, "score": 0.9583}, {"step": 86400, "score": 0.9583}]},
+        ],
+    }
+    winner = select_winner(payload, objective)
+    assert winner.checkpoint == str(durable)
+    consolidate(payload, objective, out_dir=str(tmp_path / "out"))
+    assert (tmp_path / "out" / "weights" / "latest.pt").read_bytes() == b"the-weights-that-scored"
+
+
+def test_winner_reward_is_the_one_that_produced_the_score(objective, tmp_path):
+    """A branch's `reward_config` is its *next* intent, so shipping it as the
+    provenance of an earlier score mislabels the artifact."""
+    ckpt = tmp_path / "w.pt"
+    ckpt.write_bytes(b"x")
+    measured = {"weights": {"round_won": 1.0, "damage_dealt": 0.1}}
+    payload = {
+        "run_id": "r", "env_name": "e", "objective": {"name": "o", "direction": "maximize"},
+        "spec": {}, "branches": [
+            {"branch_id": "b0", "checkpoint": str(ckpt),
+             "reward_config": {"weights": {"round_won": 1.0, "damage_dealt": 0.15}},
+             "scores": [{"step": 100, "score": 0.9, "reward": measured},
+                        {"step": 200, "score": 0.6,
+                         "reward": {"weights": {"damage_dealt": 0.15}}}]},
+        ],
+    }
+    assert select_winner(payload, objective).reward_config == measured
+
+
 def test_serve_snippet_resolves_the_checkpoint_from_the_manifest(payload, objective, tmp_path):
     """The docstring may name the file for the reader, but the code must not
     hardcode it -- otherwise a re-consolidation with a different winner ships

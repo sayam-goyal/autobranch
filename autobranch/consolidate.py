@@ -85,11 +85,37 @@ def select_winner(payload: dict[str, Any], objective) -> Winner:
     return Winner(
         branch_id=top["branch_id"],
         score=best,
-        reward_config=top.get("reward_config") or {},
-        checkpoint=top.get("checkpoint"),
+        reward_config=_reward_for_best(top),
+        # `published_checkpoint` first: it is the durable copy of the weights
+        # that earned `best`, whereas `checkpoint` follows the trainer and
+        # reverts to a sandbox-local path whenever a branch keeps training
+        # past its best score -- which is the common case, and left this
+        # function reporting the winning weights unreachable while a good
+        # copy sat on the Volume.
+        checkpoint=top.get("published_checkpoint") or top.get("checkpoint"),
         command=top.get("score_command", ""),
         detail=top.get("score_detail") or {},
     )
+
+
+def _reward_for_best(branch: dict[str, Any]) -> dict[str, Any]:
+    """The reward that produced the winning score, not the branch's latest.
+
+    A branch's `reward_config` is the next thing it intended to try. Shipping
+    it as the provenance of an earlier score mislabels the artifact: the SF3
+    run's winner was measured on the reference weights while its config had
+    already moved on.
+    """
+    best, best_score = None, None
+    for s in branch.get("scores") or []:
+        v = s.get("score")
+        if v is None:
+            continue
+        if best_score is None or float(v) > float(best_score):
+            best, best_score = s, float(v)
+    if best is not None and best.get("reward"):
+        return dict(best["reward"])
+    return dict(branch.get("reward_config") or {})
 
 
 def reward_lineage(payload: dict[str, Any], winner_branch_id: str) -> list[dict[str, Any]]:
