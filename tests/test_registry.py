@@ -299,6 +299,8 @@ def test_api_payload_matches_the_frontend_contract_exactly(backend):
         # is doing; these travel with the node so the client never scrapes the
         # event log to answer it.
         "activity", "activity_since", "sandbox_id", "best_score", "checkpoint",
+        # Provenance: the artifact states how its headline number was measured.
+        "score_command", "score_detail",
     }
     assert set(payload["events"][0]) == {"ts", "level", "branch_id", "message"}
     assert payload["run_id"] == "r-1"
@@ -408,3 +410,46 @@ def test_a_run_with_no_branches_yet_is_not_declared_finished(reg):
     _run(reg, run_id="r-new")
     reg.update_run("r-new", state="running")
     assert reg.get_run("r-new").state == "running"
+
+
+# ---- serialisation must cover every field ---------------------------
+
+def test_branch_record_to_dict_covers_every_field():
+    """The bug this guards: five fields were added to the dataclass and not to
+    to_dict(), so they were set in memory, dropped on write, and read back as
+    defaults. The visible symptoms were an artifact shipped with
+    weights/MISSING.txt and a tree view with no activity -- neither of which
+    points at serialisation. A field-coverage assertion does."""
+    from dataclasses import fields
+
+    declared = {f.name for f in fields(BranchRecord)}
+    serialised = set(BranchRecord(branch_id="b0").to_dict())
+    assert declared == serialised, (
+        f"to_dict() drops {sorted(declared - serialised)} and invents "
+        f"{sorted(serialised - declared)}"
+    )
+
+
+def test_branch_record_round_trips_every_field():
+    rec = BranchRecord(
+        branch_id="b0.1", parent_id="b0", depth=1, status="succeeded",
+        reward_config={"weights": {"reached_goal": 1.0}},
+        scores=[{"step": 10, "score": 0.5}], spend_usd=1.25, tokens=4096,
+        rationale="why", abandoned_reason=None, snapshot_id="im-1",
+        sandbox_id="sb-1", created_at=1.0, updated_at=2.0,
+        activity="training 50,000 steps", activity_since=3.0,
+        checkpoint="/data/runs/r/branches/b0.1/step_100.pt",
+        score_command="modal run ...", score_detail={"deterministic": 0.48},
+    )
+    back = BranchRecord.from_dict(rec.to_dict())
+    assert back == rec
+
+
+def test_run_record_to_dict_covers_every_field():
+    from dataclasses import fields
+
+    declared = {f.name for f in fields(RunRecord)}
+    serialised = set(RunRecord(run_id="r").to_dict())
+    assert declared == serialised, (
+        f"to_dict() drops {sorted(declared - serialised)}"
+    )

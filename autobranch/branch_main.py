@@ -522,8 +522,15 @@ class BranchRunner:
 
         prev_best = self.state.best(self.spec.objective)
         self.state.scores.append(value)
-        if prev_best is None or self.spec.objective.better(value, prev_best):
+        improved = prev_best is None or self.spec.objective.better(value, prev_best)
+        if improved:
             self.state.evals_without_improvement = 0
+            published = self._publish_weights()
+            if published:
+                # Point the registry at the durable copy, which is what
+                # consolidation will read long after this sandbox is gone.
+                self.state.checkpoint = published
+                self._event(f"weights published for score {value:.4f}")
         else:
             self.state.evals_without_improvement += 1
 
@@ -540,6 +547,40 @@ class BranchRunner:
         return {"ok": True, "objective": value, "detail": detail, "command": command,
                 "best_on_this_branch": self.state.best(self.spec.objective),
                 "evals_without_improvement": self.state.evals_without_improvement}
+
+    def _publish_weights(self) -> str | None:
+        """Copy this branch's checkpoint onto the Volume.
+
+        `/workspace` is sandbox-local: only `/data` is mounted from the
+        Volume, so a checkpoint written by the trainer dies with its sandbox.
+        That made the framework's actual deliverable -- the weights -- the one
+        thing it did not keep. Published on every new best, so the file that
+        backs the winning score is durable before anything can terminate.
+        """
+        src = self.state.checkpoint
+        if not src or not os.path.isfile(src):
+            return None
+        try:
+            import shutil
+
+            from autobranch import infra
+
+            dst_dir = os.path.join(
+                infra.DATA_ROOT, "runs", self.env.run_id, "branches", self.env.branch_id
+            )
+            os.makedirs(dst_dir, exist_ok=True)
+            dst = os.path.join(dst_dir, os.path.basename(src))
+            shutil.copyfile(src, dst)
+            # Sandbox writes to a mounted Volume persist on their own; commit
+            # raises here because a Sandbox is not a Function.
+            try:
+                infra.volume.commit()
+            except Exception:  # noqa: BLE001
+                pass
+            return dst
+        except Exception as exc:  # noqa: BLE001
+            self._event(f"could not publish weights: {type(exc).__name__}: {exc}", "warn")
+            return None
 
     def _tool_fork(self, args, action) -> dict[str, Any]:
         if self.forker is None:

@@ -534,6 +534,109 @@ def submit(
 # ---------------------------------------------------------------------------
 
 
+# Runs whose finalization we have already asked for, so a polling frontend
+# does not spawn the job once every three seconds.
+_FINALIZE_REQUESTED: set[str] = set()
+
+
+def _request_finalize(run_id: str) -> bool:
+    """Ask Modal to build this run's artifact. Returns True if it is building.
+
+    Resolved by name rather than imported: the web app must not import
+    `app.py`, because a Modal entrypoint imported from inside a package the
+    image also mounts is loaded twice and yields two `modal.App` objects --
+    which breaks ASGI routing with a bare HTTP 500 and no traceback.
+    """
+    if run_id in _FINALIZE_REQUESTED:
+        return True
+    try:
+        import modal
+
+        fn = modal.Function.from_name("autobranch", "finalize_run")
+        fn.spawn(run_id)
+        _FINALIZE_REQUESTED.add(run_id)
+        return True
+    except Exception as exc:  # noqa: BLE001 - local dev has no deployed Function
+        print(
+            f"autobranch: cannot build the artifact for {run_id} here "
+            f"({type(exc).__name__}: {exc}). Run it on Modal with "
+            f"`modal run app.py::cli_finalize --run-id {run_id}`.",
+            flush=True,
+        )
+        return False
+
+
+def _volume_artifact(run_id: str) -> dict[str, Any] | None:
+    """Read an artifact straight off the Volume.
+
+    Artifacts are written by `finalize_run` to `/data/artifacts/<run_id>`, so
+    a process without the Volume mounted -- notably `serve_local.sh`, which is
+    how this is actually looked at -- found nothing and reported `ready: false`
+    forever even though the artifact existed. `modal.Volume` reads work from
+    outside a Function, so the local server fetches over the API instead of
+    pretending the run produced nothing.
+    """
+    try:
+        import json as _json
+
+        import modal
+
+        vol = modal.Volume.from_name("autobranch-data")
+        prefix = f"{ARTIFACT_DIRNAME}/{run_id}"
+        listing = list(vol.listdir(prefix, recursive=True))
+        # Modal lists directories alongside files, with a small nonzero size,
+        # so "has bytes" is not enough to tell them apart. A directory is any
+        # entry that another entry sits inside.
+        paths = {str(e.path) for e in listing}
+        entries = [
+            e for e in listing
+            if not any(other.startswith(str(e.path) + "/") for other in paths)
+            and getattr(e, "size", 0)
+        ]
+        if not entries:
+            return None
+        manifest_path = f"{prefix}/manifest.json"
+        blob = b"".join(vol.read_file(manifest_path))
+        manifest = _json.loads(blob)
+        files = [
+            {
+                "name": str(e.path)[len(prefix) + 1:],
+                "bytes": int(e.size),
+                "url": f"/api/runs/{run_id}/artifact/{os.path.basename(str(e.path))}",
+            }
+            for e in entries
+        ]
+        return {
+            "ready": True,
+            "files": sorted(files, key=lambda f: f["name"]),
+            "run_command": manifest.get("run_command") or "python serve.py",
+            "best": {
+                "branch_id": (manifest.get("winner") or {}).get("branch_id"),
+                "score": (manifest.get("objective") or {}).get("score"),
+                "objective": (manifest.get("objective") or {}).get("name", ""),
+            },
+            "source": "volume",
+        }
+    except Exception:  # noqa: BLE001 - no credentials, no volume, not built yet
+        return None
+
+
+def _volume_artifact_file(run_id: str, filename: str) -> bytes | None:
+    """One artifact file off the Volume, for the same reason as above."""
+    try:
+        import modal
+
+        vol = modal.Volume.from_name("autobranch-data")
+        prefix = f"{ARTIFACT_DIRNAME}/{run_id}"
+        for entry in vol.listdir(prefix, recursive=True):
+            path = str(entry.path)
+            if os.path.basename(path) == filename and getattr(entry, "size", 0):
+                return b"".join(vol.read_file(path))
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def artifact_dir(run_id: str, artifact_root: str) -> str:
     return os.path.join(artifact_root, run_id)
 
@@ -678,7 +781,7 @@ def build_api(
     imports `autobranch.*` and must not need fastapi to do it.
     """
     from fastapi import Body, FastAPI, HTTPException
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, Response, JSONResponse
 
     reg = registry if registry is not None else Registry()
     launch = launcher if launcher is not None else _null_launcher
@@ -746,6 +849,23 @@ def build_api(
     def get_artifact(run_id: str):
         run = _run_or_404(run_id)
         listing = artifact_listing(run_id, api.state.artifact_root)
+
+        # Not on local disk: it may still exist on the Volume. Serving locally
+        # is how this is actually looked at, and a built artifact reported as
+        # missing is worse than slow.
+        if not listing["ready"]:
+            from_volume = _volume_artifact(run_id)
+            if from_volume is not None:
+                return from_volume
+
+        # A finished run should produce its artifact without anyone asking.
+        # Triggered here rather than from a branch because consolidation needs
+        # the whole tree, and no branch knows when the last of its siblings
+        # finished. Spawned, not awaited: copying weights is slower than an
+        # HTTP request should be, and `building` is an honest answer.
+        if not listing["ready"] and run.state in ("succeeded", "failed", "stopped"):
+            listing["building"] = _request_finalize(run_id)
+
         if listing["best"] is None and run.best:
             # Consolidation has not written a manifest yet, but the registry
             # already knows which branch is ahead; showing it is honest.
@@ -764,6 +884,15 @@ def build_api(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         if path is None:
+            # Same reason as the listing: the file may be on the Volume while
+            # this process has no local copy of it.
+            blob = _volume_artifact_file(run_id, filename)
+            if blob is not None:
+                return Response(
+                    content=blob,
+                    media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
             raise HTTPException(
                 status_code=404, detail=f"{filename!r} is not in the artifact for {run_id}"
             )

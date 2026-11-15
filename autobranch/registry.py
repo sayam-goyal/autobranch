@@ -208,6 +208,11 @@ class BranchRecord:
             "sandbox_id": self.sandbox_id,
             "created_at": float(self.created_at),
             "updated_at": float(self.updated_at),
+            "activity": self.activity,
+            "activity_since": float(self.activity_since),
+            "checkpoint": self.checkpoint,
+            "score_command": self.score_command,
+            "score_detail": dict(self.score_detail),
         }
 
     @staticmethod
@@ -227,6 +232,11 @@ class BranchRecord:
             sandbox_id=raw.get("sandbox_id"),
             created_at=float(raw.get("created_at", 0.0)),
             updated_at=float(raw.get("updated_at", 0.0)),
+            activity=raw.get("activity", "") or "",
+            activity_since=float(raw.get("activity_since", 0.0)),
+            checkpoint=raw.get("checkpoint"),
+            score_command=raw.get("score_command", "") or "",
+            score_detail=dict(raw.get("score_detail") or {}),
         )
 
 
@@ -687,6 +697,11 @@ class Registry:
                     "sandbox_id": b.sandbox_id,
                     "best_score": b.best_score,
                     "checkpoint": b.checkpoint,
+                    # Provenance travels with the branch so the artifact can
+                    # state how its headline number was measured. Without
+                    # these the manifest said "(command not recorded)".
+                    "score_command": b.score_command,
+                    "score_detail": b.score_detail,
                 }
                 for b in self.branches(run_id)
             ],

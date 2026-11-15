@@ -39,7 +39,7 @@ import zipfile
 import modal
 
 from autobranch.consolidate import ARTIFACT_DIRNAME
-from autobranch.infra import VOLUMES, VOLUME_NAME, app, kimi_secret, web_image
+from autobranch.infra import VOLUMES, VOLUME_NAME, app, kimi_secret, volume, web_image
 from autobranch.server import BUNDLE_DIRNAME, DEFAULT_DATA_ROOT, MANIFEST_NAME
 
 # `numpy` is added on top of the pinned web stack so the submission gate can
@@ -265,6 +265,96 @@ def _report(problems: list, advisories: list) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+
+
+# WEB_IMAGE, not web_image(): the bare image has no `autobranch` package,
+# and this function imports it. That mistake crash-looped the function.
+@app.function(image=WEB_IMAGE, volumes=VOLUMES, timeout=900)
+def finalize_run(run_id: str) -> dict:
+    """Turn a finished run into a downloadable artifact.
+
+    Nothing used to call `consolidate()`, so a run could reach `succeeded`
+    with a measured winner and still produce no weights -- the framework's
+    entire deliverable. This is that missing step, and it is idempotent: a
+    second call over an existing artifact just rewrites it from the same
+    records.
+
+    It runs as a Function rather than inside a branch because it needs the
+    whole tree, and no single branch knows when the last of its siblings has
+    finished.
+    """
+    import os
+    import shutil
+
+    from autobranch.consolidate import ARTIFACT_DIRNAME, ConsolidationError, consolidate
+    from autobranch.registry import Registry
+    from autobranch.spec import EnvironmentSpec
+
+    registry = Registry(writer_id="finalizer")
+    run = registry.get_run(run_id)
+    if run is None:
+        return {"ok": False, "reason": f"unknown run {run_id}"}
+
+    payload = registry.api_payload(run_id)
+    payload["spec"] = run.spec or {}
+    payload["constraints"] = run.constraints
+
+    try:
+        spec = EnvironmentSpec.parse(run.spec) if run.spec else None
+        objective = spec.objective if spec else _FallbackObjective(run.objective)
+    except Exception:  # noqa: BLE001 - a malformed spec must not block the artifact
+        objective = _FallbackObjective(run.objective)
+
+    out_dir = os.path.join(DEFAULT_DATA_ROOT, ARTIFACT_DIRNAME, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    def fetch(src: str, dst: str) -> int:
+        """Weights live on the Volume under runs/<run>/branches/<branch>/."""
+        if os.path.isfile(src):
+            shutil.copyfile(src, dst)
+            return os.path.getsize(dst)
+        raise ConsolidationError(
+            f"the winning checkpoint is not on the volume: {src!r}. The branch "
+            "that produced it may have terminated before publishing its weights."
+        )
+
+    try:
+        index = consolidate(payload, objective, out_dir=out_dir, fetch_checkpoint=fetch)
+    except ConsolidationError as exc:
+        registry.append_event(run_id, "warn", f"artifact not built: {exc}")
+        volume.commit()
+        return {"ok": False, "reason": str(exc)}
+
+    volume.commit()
+    registry.append_event(
+        run_id, "info",
+        f"artifact ready: {len(index['files'])} files, best "
+        f"{index['best']['score']:.4f} from {index['best']['branch_id']}",
+    )
+    return {"ok": True, **{k: index[k] for k in ("best", "run_command")},
+            "files": [f["name"] for f in index["files"]]}
+
+
+class _FallbackObjective:
+    """Enough of an Objective to rank by, when the stored spec is unusable."""
+
+    def __init__(self, raw: dict):
+        self.name = (raw or {}).get("name", "objective")
+        self.direction = (raw or {}).get("direction", "maximize")
+
+    @property
+    def sign(self) -> float:
+        return 1.0 if self.direction == "maximize" else -1.0
+
+    def better(self, a: float, b: float) -> bool:
+        return a * self.sign > b * self.sign
+
+
+@app.local_entrypoint()
+def cli_finalize(run_id: str):
+    """modal run app.py::cli_finalize --run-id run-xxxx"""
+    out = finalize_run.remote(run_id)
+    print(json.dumps(out, indent=2))
 
 @app.local_entrypoint()
 def cli_validate(bundle: str):
