@@ -70,7 +70,7 @@ objective:                    # What we optimise. Agents may NEVER modify this.
 
 resources: {gpu: null, cpu: 2, memory: 8192}
 policy:    {kind: discrete, n_actions: 4, obs_dim: 81}
-trainer:   ppo                # ppo | grpo_lora | custom:module:fn
+trainer:   ppo                # ppo | grpo_lora | grpo_full | custom:module:fn
 ```
 
 ```python
@@ -143,6 +143,32 @@ are extracted:
 | `nothing bigger than an L40S` | GPU ceiling |
 | `stay under $50` | hard spend cap, enforced not advised |
 
+## Three trainers, one method
+
+| trainer | what it writes | when |
+|---|---|---|
+| `ppo` | a dense MLP from scratch | the environment has a small observation vector |
+| `grpo_lora` | an adapter over frozen base weights | post-training that has to fit on one GPU |
+| `grpo_full` | **every parameter** of a base model | reproducing a full fine-tune |
+
+The RL method is the same in both post-training paths -- critic-free,
+group-relative advantages, a clipped surrogate, and an action that is a masked
+token rather than parsed text. They differ in what they are allowed to write
+to, which is a question about memory and about fidelity to what is being
+reproduced, not about algorithm.
+
+`grpo_full` exists because the thing it reproduces was a full fine-tune. An
+8.77B model takes a full-parameter update on **one** H100 -- 49.5 GiB of 79.2,
+measured, with an 8-bit optimizer doing the work that makes it fit, since fp32
+Adam moments alone would be 64 GiB.
+
+It also carries the vision path: `examples/sf3` feeds
+`Qwen/Qwen3-VL-8B-Instruct` the emulator's frame plus a short state line, which
+costs ~104 prompt tokens. The action menu is in the prompt, because a policy
+sampling over 40 masked tokens with no labels cannot know which one is a
+Hadouken and would have to learn the mapping by trial -- discarding everything
+the base model already knows about the game.
+
 ## Post-training a base model
 
 `must posttrain Qwen/Qwen3-4B` switches the trainer to `grpo_lora`: LoRA
@@ -199,6 +225,7 @@ autobranch/
   forking.py        snapshot, fork, rollback
   trainer.py        PPO, driven by the spec
   posttrain.py      grpo_lora: LoRA post-training, critic-free
+  posttrain_full.py grpo_full: full-parameter post-training, critic-free
   lm_policy.py      running a post-trained policy -- imports no reward code
   objective.py      the immutable measurement
   registry.py       run/branch state, one key per writer
@@ -208,6 +235,7 @@ autobranch/
 frontend/           vanilla HTML/CSS/JS, no build step
 examples/gridworld/ the reference environment (ppo)
 examples/wordguess/ the reference environment for post-training
+examples/sf3/       Street Fighter III, a vision policy over a real emulator
 ```
 
 ## Running it
@@ -219,7 +247,7 @@ modal run app.py::cli_validate  --bundle examples/gridworld
 modal run app.py::cli_submit    --bundle examples/gridworld --usd 8 --hours 1
 modal run app.py::cli_status    --run-id run-xxxx
 modal run app.py::cli_finalize  --run-id run-xxxx   # build the artifact
-python3 -m pytest tests/ -q                        # 413 tests
+python3 -m pytest tests/ -q                        # 418 tests
 ```
 
 ## Notes from building it
