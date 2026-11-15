@@ -295,3 +295,58 @@ def test_default_writer_ids_do_not_collide():
     a = Ledger("r", root="/tmp", branch_id="b0.1")
     b = Ledger("r", root="/tmp", branch_id="b0.1")
     assert a.writer_id != b.writer_id, "two writers must never share a shard"
+
+
+# ---- sandboxes are not Functions ------------------------------------
+
+class _SandboxVolume:
+    """A Volume as seen from a Sandbox: writes persist, commit/reload raise.
+
+    Verified against real Modal: a file written inside a sandbox with no
+    commit at all was readable from outside, while `volume.commit()` and
+    `volume.reload()` both raise "can only be called from within a running
+    function" because a Sandbox is not a Function.
+    """
+
+    def __init__(self):
+        self.commits = 0
+        self.reloads = 0
+
+    def commit(self):
+        self.commits += 1
+        raise RuntimeError("commit() can only be called from within a running function")
+
+    def reload(self):
+        self.reloads += 1
+        raise RuntimeError("reload() can only be called from within a running function")
+
+
+def test_spend_still_reads_inside_a_sandbox(tmp_path):
+    """The bug this guards: a raising reload made every branch report $0 while
+    the shards were being written correctly, so the budget guard had nothing to
+    enforce against."""
+    vol = _SandboxVolume()
+    led = Ledger("run-sb", root=str(tmp_path), volume=vol, branch_id="b0")
+
+    led.record_compute(seconds=60.0, gpu=None, cpu=2.0, memory_mib=8192, branch_id="b0")
+    led.commit()                      # raises internally, must not propagate
+    led.record_llm(tokens_in=1893, tokens_out=267, branch_id="b0")
+    led.commit()
+
+    total = led.total_usd()           # reload raises internally, must not propagate
+    assert total > 0.0, "spend read as zero despite entries being written"
+    assert vol.commits == 2 and vol.reloads >= 1, "the failing calls were still attempted"
+
+    by_branch = led.by_branch()
+    assert by_branch["b0"] == pytest.approx(total)
+    assert led.tokens() == 1893 + 267
+
+
+def test_a_failed_commit_does_not_lose_the_entry(tmp_path):
+    vol = _SandboxVolume()
+    led = Ledger("run-sb", root=str(tmp_path), volume=vol, branch_id="b0")
+    led.record_compute(seconds=30.0, cpu=2.0, memory_mib=8192, branch_id="b0")
+    led.commit()
+    # A fresh reader over the same directory sees it on disk.
+    reader = Ledger("run-sb", root=str(tmp_path), volume=None)
+    assert len(reader.entries()) == 1

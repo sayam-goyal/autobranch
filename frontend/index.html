@@ -54,21 +54,24 @@
 </footer>
 
 
-<!-- ───────────────────────────── training runs ───────────────────────────── -->
+<!-- ───────────────────────────── training runs ─────────────────────────────
+     The landing page. One scan should answer three questions: which runs are
+     live, which ones won, and what they cost. So: a four-number summary strip,
+     then one table with no card around it — hairlines only.
+     ------------------------------------------------------------------------ -->
 <template id="tpl-runs">
   <section class="page page-runs">
     <div class="page-head">
       <p class="eyebrow">Training runs</p>
       <h1>Everything you have submitted.</h1>
       <p class="lede">
-        One row per run. A run owns a tree of Modal sandboxes, each one training a
-        different reward config against the same untouchable objective. Open a row to
-        watch its sandboxes.
+        One row per run. A run owns a tree of Modal sandboxes, each training a different
+        reward config against the same untouchable objective. Open a row to watch its tree.
       </p>
     </div>
 
-    <div class="runs-bar">
-      <dl class="stats stats-left">
+    <div class="summary">
+      <dl class="stats">
         <div class="stat">
           <dt>Runs</dt>
           <dd class="mono num" data-f="total">—</dd>
@@ -78,29 +81,32 @@
           <dd class="mono num" data-f="live">—</dd>
         </div>
         <div class="stat">
+          <dt>Best objective</dt>
+          <dd class="mono num accent" data-f="best">—</dd>
+        </div>
+        <div class="stat">
           <dt>Total spend</dt>
           <dd class="mono num" data-f="spend">—</dd>
         </div>
       </dl>
 
-      <div class="runs-actions">
-        <span class="poll-note mono" data-f="poll-note" aria-live="polite"></span>
+      <div class="summary-actions">
+        <span class="region-note mono" data-f="poll-note" aria-live="polite"></span>
         <a class="btn btn-primary btn-sm" href="#/new">New run</a>
       </div>
     </div>
 
-    <section class="panel">
-      <div class="panel-head">
+    <section class="region region-flat">
+      <div class="region-head">
         <p class="eyebrow">Runs</p>
-        <span class="panel-note mono" data-f="sort-note">newest first</span>
+        <span class="region-note mono" data-f="sort-note">newest first</span>
       </div>
       <div class="table-scroll">
         <table class="table table-runs" data-f="runs-table">
           <thead>
             <tr>
               <th scope="col"><button class="th-sort" type="button" data-sort="run_id">Run</button></th>
-              <th scope="col"><button class="th-sort" type="button" data-sort="env_name">Environment</button></th>
-              <th scope="col"><button class="th-sort" type="button" data-sort="objective_name">Objective</button></th>
+              <th scope="col"><button class="th-sort" type="button" data-sort="env_name">Environment / objective</button></th>
               <th scope="col"><button class="th-sort" type="button" data-sort="state">State</button></th>
               <th scope="col" class="num"><button class="th-sort" type="button" data-sort="best_score">Best</button></th>
               <th scope="col"><button class="th-sort" type="button" data-sort="branches">Sandboxes</button></th>
@@ -111,9 +117,9 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="panel-foot" data-f="foot">
-        Sandbox counts are fetched one run per refresh cycle, so the list never
-        stampedes the API. A run whose tree has not been read yet shows a dash.
+      <p class="region-foot" data-f="foot">
+        Sandbox counts are filled in one run per refresh cycle, so the list never stampedes
+        the API. A run whose tree has not been read yet shows a dash.
       </p>
     </section>
   </section>
@@ -175,7 +181,7 @@
 
       <!-- ── the parse preview: what the system understood ── -->
       <section class="block preflight">
-        <div class="pf-head">
+        <div class="block-head">
           <p class="eyebrow">What the system understood</p>
           <span class="badge" data-f="pf-state" hidden></span>
         </div>
@@ -243,93 +249,107 @@ no GPU larger than an L40S"></textarea>
 </template>
 
 
-<!-- ───────────────────────────── run ───────────────────────────── -->
+<!-- ───────────────────────────── run ─────────────────────────────
+     One organising idea: a single column of three regions.
+
+       1. identity + the one number that matters (best objective, set large),
+       2. the sandbox tree,
+       3. ONE switchable region underneath — the selected sandbox, the full
+          table, or the run's activity — never more than one at a time.
+
+     The old layout stacked a detail panel, a table and a feed permanently
+     beside and below the tree; that is what made the page feel crowded and
+     what left a column of dead space under a short tree.
+     ------------------------------------------------------------------------ -->
 <template id="tpl-run">
   <section class="page page-run">
     <header class="run-head">
-      <div class="run-head-id">
-        <p class="eyebrow">Run</p>
-        <h1 class="mono" data-f="run_id">—</h1>
-        <p class="run-sub">
-          <span data-f="env_name">—</span>
-          <span class="sep" aria-hidden="true">/</span>
-          <span class="mono" data-f="objective">—</span>
-          <span class="dir-chip mono" data-f="direction"></span>
-          <span class="sep" aria-hidden="true">/</span>
-          <span class="mono" data-f="started">—</span>
-        </p>
+      <div class="run-head-top">
+        <div class="run-ident">
+          <p class="eyebrow">Run</p>
+          <h1 class="mono" data-f="run_id">—</h1>
+          <p class="run-sub">
+            <span data-f="env_name">—</span>
+            <span class="sep" aria-hidden="true">/</span>
+            <span class="mono" data-f="objective">—</span>
+            <span class="dir-chip mono" data-f="direction"></span>
+            <span class="sep" aria-hidden="true">/</span>
+            <span class="mono" data-f="started">—</span>
+          </p>
+        </div>
+        <div class="run-actions">
+          <a class="btn btn-primary btn-sm" data-f="artifact-link" href="#/runs">Artifact</a>
+          <button class="btn btn-sm" type="button" data-f="stop">Stop run</button>
+        </div>
       </div>
 
-      <dl class="stats">
-        <div class="stat">
-          <dt>State</dt>
-          <dd data-f="state-badge"></dd>
+      <div class="run-head-main">
+        <div class="hero-metric">
+          <p class="eyebrow" data-f="score-label">Best objective</p>
+          <p class="score-big mono num" data-f="best-score">—</p>
+          <p class="hero-sub mono" data-f="best-sub">—</p>
         </div>
-        <div class="stat">
-          <dt>Elapsed</dt>
-          <dd class="mono num" data-f="elapsed">—</dd>
-        </div>
-        <div class="stat">
-          <dt>Best objective</dt>
-          <dd class="mono num accent" data-f="best-score">—</dd>
-        </div>
-        <div class="stat">
-          <dt>Sandboxes</dt>
-          <dd class="mono num" data-f="branch-count">—</dd>
-        </div>
-      </dl>
 
-      <div class="run-head-actions">
-        <a class="btn btn-primary btn-sm" data-f="artifact-link" href="#/runs">Artifact</a>
-        <button class="btn btn-sm" type="button" data-f="stop">Stop run</button>
+        <dl class="stats">
+          <div class="stat">
+            <dt>State</dt>
+            <dd data-f="state-badge"></dd>
+          </div>
+          <div class="stat">
+            <dt>Elapsed</dt>
+            <dd class="mono num" data-f="elapsed">—</dd>
+          </div>
+          <div class="stat">
+            <dt>Sandboxes</dt>
+            <dd class="mono num" data-f="branch-count">—</dd>
+          </div>
+        </dl>
+
+        <div class="spend">
+          <div class="spend-head">
+            <span class="label">Spend against cap</span>
+            <span class="mono num" data-f="spend-text">—</span>
+          </div>
+          <div class="meter" data-f="meter" role="progressbar" aria-label="Spend against cap" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="meter-fill" data-f="meter-fill"></div>
+          </div>
+          <p class="spend-foot mono" data-f="budget-foot">—</p>
+        </div>
       </div>
     </header>
 
-    <section class="meter-block">
-      <div class="meter-head">
-        <span class="label">Spend against cap</span>
-        <span class="mono num" data-f="spend-text">—</span>
+    <section class="region region-tree">
+      <div class="region-head">
+        <p class="eyebrow">Sandbox tree</p>
+        <!-- One row of counts, which doubles as the colour legend: a separate
+             legend listing statuses that are not in this run is pure noise. -->
+        <ul class="status-chips" data-f="status-chips" aria-label="Sandboxes by status"></ul>
       </div>
-      <div class="meter" data-f="meter" role="progressbar" aria-label="Spend against cap" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <div class="meter-fill" data-f="meter-fill"></div>
+      <div class="tree-scroll" data-f="tree-scroll" tabindex="0" role="group" aria-label="Sandbox tree — select a sandbox for its detail">
+        <svg class="tree-svg" data-f="tree-svg" xmlns="http://www.w3.org/2000/svg"></svg>
       </div>
-      <p class="meter-foot mono" data-f="budget-foot">—</p>
-      <ul class="status-chips" data-f="status-chips" aria-label="Sandboxes by status"></ul>
+      <p class="region-foot" data-f="tree-foot">
+        Every node is one Modal sandbox, and every node is attached to the one that spawned it —
+        failed and abandoned lines included. A dashed edge means the link was inferred from the
+        branch id rather than recorded.
+      </p>
     </section>
 
-    <div class="run-grid">
-      <section class="panel panel-tree">
-        <div class="panel-head">
-          <div class="panel-title">
-            <p class="eyebrow">Sandbox tree</p>
-            <p class="panel-note">Each node is one Modal sandbox: its short id, its status, and what it is doing right now.</p>
-          </div>
-          <ul class="legend" aria-label="Status legend">
-            <li><span class="dot st-pending" aria-hidden="true"></span>starting</li>
-            <li><span class="dot st-running" aria-hidden="true"></span>running</li>
-            <li><span class="dot st-evaluating" aria-hidden="true"></span>evaluating</li>
-            <li><span class="dot st-succeeded" aria-hidden="true"></span>succeeded</li>
-            <li><span class="dot st-abandoned" aria-hidden="true"></span>abandoned</li>
-            <li><span class="dot st-failed" aria-hidden="true"></span>failed</li>
-          </ul>
+    <section class="region region-lower">
+      <div class="region-head">
+        <div class="segmented" role="tablist" aria-label="Run detail">
+          <button class="seg" type="button" role="tab" id="tab-sandbox" data-tab="sandbox" aria-selected="true" aria-controls="pane-sandbox">Sandbox</button>
+          <button class="seg" type="button" role="tab" id="tab-all" data-tab="all" aria-selected="false" aria-controls="pane-all" tabindex="-1">All sandboxes</button>
+          <button class="seg" type="button" role="tab" id="tab-activity" data-tab="activity" aria-selected="false" aria-controls="pane-activity" tabindex="-1">Activity</button>
         </div>
-        <div class="tree-scroll" data-f="tree-scroll" tabindex="0" role="group" aria-label="Sandbox tree — select a sandbox for detail">
-          <svg class="tree-svg" data-f="tree-svg" xmlns="http://www.w3.org/2000/svg"></svg>
-        </div>
-        <p class="panel-foot">Abandoned lines stay on the canvas. Every dead end one branch recorded is a dead end its siblings never pay for twice.</p>
-      </section>
+        <span class="region-note mono" data-f="region-note"></span>
+      </div>
 
-      <aside class="panel panel-detail" data-f="detail" aria-live="polite">
-        <p class="empty mono">Select a sandbox.</p>
-      </aside>
-    </div>
+      <div class="pane" id="pane-sandbox" role="tabpanel" aria-labelledby="tab-sandbox" data-f="detail" tabindex="0">
+        <p class="empty mono">Select a sandbox in the tree.</p>
+      </div>
 
-    <div class="run-grid-2">
-      <section class="panel panel-table">
-        <div class="panel-head">
-          <p class="eyebrow">Sandboxes</p>
-          <span class="panel-note mono" data-f="sort-note">sorted by objective score</span>
-        </div>
+      <div class="pane" id="pane-all" role="tabpanel" aria-labelledby="tab-all" hidden>
         <div class="table-scroll">
           <table class="table table-dense" data-f="branch-table">
             <thead>
@@ -347,17 +367,12 @@ no GPU larger than an L40S"></textarea>
             <tbody></tbody>
           </table>
         </div>
-      </section>
+      </div>
 
-      <section class="panel panel-log">
-        <div class="panel-head">
-          <p class="eyebrow">Activity</p>
-          <span class="panel-note mono" data-f="log-count"></span>
-        </div>
-        <ol class="feed" data-f="log" aria-label="Run activity, newest first"></ol>
-        <p class="panel-foot">Newest first. The branch chip selects that sandbox in the tree.</p>
-      </section>
-    </div>
+      <div class="pane" id="pane-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
+        <ol class="feed" data-f="log" tabindex="0" aria-label="Run activity, newest first"></ol>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -370,20 +385,18 @@ no GPU larger than an L40S"></textarea>
       <h1 class="mono" data-f="run_id">—</h1>
     </div>
 
-    <section class="hero" data-f="hero">
-      <div class="hero-score">
+    <section class="hero">
+      <div class="hero-metric">
         <p class="eyebrow" data-f="objective-label">Objective</p>
         <p class="score-big mono num" data-f="score">—</p>
-        <p class="hero-meta mono" data-f="score-meta">—</p>
+        <p class="hero-sub mono" data-f="score-meta">—</p>
       </div>
-      <div class="hero-side">
-        <dl class="kv">
-          <div><dt>Winning branch</dt><dd class="mono" data-f="branch">—</dd></div>
-          <div><dt>Environment</dt><dd class="mono" data-f="env">—</dd></div>
-          <div><dt>Total spend</dt><dd class="mono num" data-f="spend">—</dd></div>
-          <div><dt>Sandboxes explored</dt><dd class="mono num" data-f="explored">—</dd></div>
-        </dl>
-      </div>
+      <dl class="kv">
+        <div><dt>Winning branch</dt><dd class="mono" data-f="branch">—</dd></div>
+        <div><dt>Environment</dt><dd class="mono" data-f="env">—</dd></div>
+        <div><dt>Total spend</dt><dd class="mono num" data-f="spend">—</dd></div>
+        <div><dt>Sandboxes explored</dt><dd class="mono num" data-f="explored">—</dd></div>
+      </dl>
     </section>
 
     <section class="block" data-f="lineage-block" hidden>

@@ -38,6 +38,9 @@ RUN_STATES = ("pending", "running", "succeeded", "failed", "stopped")
 # exists to prevent.
 PROCESS_TOKEN = uuid.uuid4().hex[:8]
 
+# Warn once per process rather than on every read.
+_LEDGER_WARNED = False
+
 
 # ---- backends -----------------------------------------------------------
 
@@ -379,14 +382,80 @@ class Registry:
         return self._hydrate_run(rec)
 
     def _hydrate_run(self, rec: RunRecord, *, keys: list[str] | None = None) -> RunRecord:
-        """Fill the derived fields. See `RunRecord` for why they are derived."""
+        """Fill the derived fields. See `RunRecord` for why they are derived.
+
+        Two of these are derived rather than stored for the same reason: no
+        single writer is in a position to be correct about them. Nothing owns
+        "the run is over" -- each branch only knows about itself, and the root
+        may be abandoned while a child is still working -- so the run's state
+        is computed from its branches on every read. Without this a finished
+        run sat at `running` with its elapsed clock ticking forever.
+        """
+        branches = self.branches(rec.run_id, keys=keys)
         rec.best = self.backend.get(self.best_key(rec.run_id)) or None
-        rec.spend_usd = round(
-            sum(b.spend_usd for b in self.branches(rec.run_id, keys=keys)), 6
-        )
-        if rec.state in ("pending", "running"):
+
+        # Spend: the ledger is authoritative because it sees every writer,
+        # including branches whose own record never got published. Falling back
+        # to the branch records is still better than reporting zero.
+        rec.spend_usd = self._run_spend(rec.run_id, branches)
+
+        derived = self._derive_run_state(rec, branches)
+        if derived != rec.state:
+            rec.state = derived
+            if derived in TERMINAL_STATUSES:
+                # Freeze the clock at the moment we first observe completion
+                # and persist it, so elapsed stops moving and later reads agree.
+                rec.elapsed_s = max(0.0, self._now() - rec.created_at)
+                try:
+                    stored = self.backend.get(self.run_key(rec.run_id)) or {}
+                    stored.update({"state": derived, "elapsed_s": rec.elapsed_s})
+                    self.backend.put(self.run_key(rec.run_id), stored)
+                except Exception:  # noqa: BLE001 - a read must not fail on this
+                    pass
+        if rec.state in ("pending", "running", "evaluating"):
             rec.elapsed_s = max(0.0, self._now() - rec.created_at)
         return rec
+
+    def _run_spend(self, run_id: str, branches: list[BranchRecord]) -> float:
+        """Total cost of a run, preferring the ledger's shard aggregate."""
+        from_branches = round(sum(b.spend_usd for b in branches), 6)
+        try:
+            from autobranch import infra
+            from autobranch.ledger import Ledger
+
+            total = float(
+                Ledger(run_id, root=infra.DATA_ROOT, volume=infra.volume).total_usd()
+            )
+            # Trust whichever saw more: a branch that never published its own
+            # record still wrote ledger shards, and vice versa.
+            return round(max(total, from_branches), 6)
+        except Exception as exc:  # noqa: BLE001 - off-volume (tests, local dev)
+            global _LEDGER_WARNED
+            if not _LEDGER_WARNED:
+                _LEDGER_WARNED = True
+                print(
+                    f"autobranch: ledger unreadable here ({type(exc).__name__}: {exc}); "
+                    "run spend falls back to branch records. Expected when serving "
+                    "locally, where the Volume is not mounted.",
+                    flush=True,
+                )
+            return from_branches
+
+    def _derive_run_state(self, rec: RunRecord, branches: list[BranchRecord]) -> str:
+        """A run is over when every one of its branches is over.
+
+        `succeeded` requires an actual measurement: a tree where every branch
+        died without ever scoring is a failed run, not a successful one that
+        happens to have no result.
+        """
+        if rec.state in ("stopped", "failed") or rec.state in TERMINAL_STATUSES:
+            return rec.state
+        if not branches:
+            return rec.state
+        if any(b.status not in TERMINAL_STATUSES for b in branches):
+            return rec.state
+        measured = any(b.scores for b in branches)
+        return "succeeded" if measured else "failed"
 
     def list_runs(self, limit: int = 50) -> list[RunRecord]:
         """Newest first. Enumerated by key scan -- there is no index blob to

@@ -6,15 +6,38 @@ the same Modal ASGI app that serves the API.
 
 | screen | route | what it does |
 |---|---|---|
-| Training runs | `#/runs` | the landing tab: sortable table of every run, auto-refreshing while any run is live |
+| Training runs | `#/runs` | the landing tab: which runs are live, which ones scored, what they cost — one table, auto-refreshing while any run is live |
 | New run | `#/new` | bundle (`.zip` drop **or** git URL), a parse preview of the manifest, constraints, budget caps |
-| Run | `#/run/<id>` | sandbox tree, per-sandbox detail and timeline, sandbox table, run activity feed, spend meter |
+| Run | `#/run/<id>` | identity + best objective, the sandbox tree, and one switchable region: the selected sandbox, all sandboxes, or activity |
 | Artifact | `#/artifact/<id>` | winning objective score, downloads, the "run it" snippet |
 
 Nav is two permanent tabs (**Training runs**, **New run**) plus **Run** and
 **Artifact**, which appear once a run is in context and deep-link to it. An
 empty hash lands on `#/runs`: the first question the app answers is "what have
 I submitted", not "submit something".
+
+## How the run screen is organised
+
+One column, three regions, and never more than one of them asking for the same
+glance:
+
+1. **Identity and the number.** The run id, its environment and objective, then
+   the best objective score set at `--fs-hero`. That score is the point of the
+   product, so it is the largest thing on the page. The state, the elapsed
+   clock, the sandbox count and the spend meter sit beside it as qualifiers,
+   not as competitors.
+2. **The sandbox tree.** The status census in its header doubles as the colour
+   legend — a legend listing statuses this run does not have is noise.
+3. **One switchable region.** A segmented control over three panes: **Sandbox**
+   (the selected one: what it is doing, its numbers, its score history, its
+   reward config, its rationale and its own timeline), **All sandboxes** (the
+   full table) and **Activity** (the run feed). Picking a sandbox anywhere —
+   a tree node, a table row, a branch chip in the feed — brings the Sandbox
+   pane forward. Exactly one pane is visible at a time.
+
+Earlier versions stacked a detail panel, a table and a feed permanently around
+the tree. That is what made the page feel crowded, and the two-column grid left
+a tall column of dead space underneath a short tree.
 
 ## How it's served
 
@@ -41,7 +64,7 @@ fallback, because the published ones only exist once the backend writes them:
 * **sandbox id** — `branch.sandbox_id` when `api_payload` carries it; otherwise
   the last `sb-…` id this branch's events mentioned (`launch_root` and the
   forker both name the sandbox they just created). Shown short
-  (`sb-01M7…E8FN`), in full in the detail panel and in the row's `title`.
+  (`sb-01M7…E8FN`), in full in the Sandbox pane and in the row's `title`.
 * **activity** — the "doing now" line, in order of trust:
   1. `branch.activity`, written by the sandbox *before* it starts the work, so
      it stays correct across a long `train` call where the newest event still
@@ -54,9 +77,50 @@ fallback, because the published ones only exist once the backend writes them:
   3. the status, when a branch has no events yet — `pending` reads "sandbox
      starting" in a live run and "sandbox never started" in a finished one.
 
-The same line appears on the node, in the `Doing now` block of the detail
-panel, and in the sandbox table's last column. The detail panel also carries
+The same line appears on the node, in the `Doing now` block of the Sandbox
+pane, and in the sandbox table's last column. The Sandbox pane also carries
 that sandbox's own event timeline and the objective-score sparkline.
+
+## The tree: nothing floats, and the canvas is the content
+
+Two guarantees, both enforced in `layoutTree()` rather than hoped for.
+
+**Nothing floats.** A branch id encodes its own lineage by construction —
+`b0` → `b0.1` → `b0.1.2` — so a parent is always derivable by stripping the
+last `.N` segment. `resolveParent()` tries, in order:
+
+1. `parent_id`, when that branch is actually present in the payload. Drawn as
+   a **solid** edge: the link was recorded.
+2. the **id-derived** ancestor chain, walking `b0.1.1` → `b0.1` → `b0` until it
+   reaches a branch that is present. Any intermediate id that is genuinely
+   absent becomes a visible `MISSING` placeholder node, so the chain still
+   reaches all the way down. Drawn **dashed**: the link was inferred.
+3. the **single root**, for an id with no derivable ancestor at all. Drawn as a
+   dashed `unlinked` edge — a second root is never started.
+
+A `parent_id` cycle is cut rather than allowed to leave the forest rootless,
+and the root is picked deterministically (a real branch over a placeholder,
+then the shortest id). `failed` and `abandoned` branches are **ordinary members
+of the tree** — same position, same edge to their parent, only de-emphasised
+paint — which is the specific bug this replaced: a dead branch used to read as
+a floating box because its edge was drawn in `--border` dashed over a
+`--border` grid-paper background, i.e. invisible. Spent edges are now lighter
+but never invisible, the grid paper is gone, and dashed means exactly one
+thing: inferred.
+
+Finally the layout asserts what it just promised — one root, and every other
+node owning exactly one edge — and `console.error`s the audit if that ever
+breaks, instead of silently drawing a floating box. The audit is parked on
+`window.AUTOBRANCH_TREE_AUDIT` (`{nodes, edges, root, roots, placeholders,
+inferred, orphans, notes, ok}`) so it can be inspected from the console, and
+the tree's footer says in plain English when links had to be inferred.
+
+**The canvas is the content.** Row depth comes from the *resolved* tree, not
+from `branch.depth`, so an edge can never point upwards. The svg's `width`,
+`height` and `viewBox` are computed from the node bounding box plus a 14px pad
+— never a fixed height — and `.tree-scroll` takes its height from the svg. A
+one-node tree is therefore a 104px strip, not a half-screen canvas, and a tall
+tree scrolls inside its own container at `min(60vh, 600px)`.
 
 ## Polling
 
@@ -172,10 +236,25 @@ under `autobranch:theme`.
 Accent is a single token, `--accent` (`#0b5bff` light, `#4d8dff` dark). Status
 colours (`--st-running`, `--st-evaluating`, `--st-pending`, `--st-succeeded`,
 `--st-abandoned`, `--st-failed`) are separate tokens so semantics never ride on
-the brand colour. Every status renders distinctly in the tree, the tables, the
-chips and the legend; only genuinely live ones pulse, and
-`prefers-reduced-motion` removes the animation entirely.
+the brand colour. Every status renders distinctly in the tree, the tables and
+the status census; only genuinely live ones pulse, and
+`prefers-reduced-motion` removes the animation entirely. `--tree-line` is its
+own token because an edge has to stay legible against `--bg-subtle` in both
+themes, which `--border` did not.
 
 Wide content — both tables, the tree canvas, the signals table, code blocks —
 scrolls inside its own container. The page body never scrolls sideways, at any
 width.
+
+## Type and spacing
+
+Two short scales, declared once at the top of `styles.css` and used everywhere.
+Six text sizes — `--fs-micro` 10, `--fs-xs` 11, `--fs-sm` 12, `--fs-md` 13 (the
+document default), `--fs-lg` 15, plus `--fs-h1` and `--fs-hero`, both clamped —
+and six spacing steps, `--sp-1` 4px through `--sp-6` 36px. The near-duplicates
+the stylesheet used to carry (9/14/16px, and paddings at 0.45/0.6/0.65/0.7/0.8/
+0.85/0.9rem) were collapsed onto them.
+
+Structure is `.region`: one box per region, a hairline head, a body, an
+optional hairline foot — never a card inside a card. `.region-flat` drops the
+outer border for a full-width table, which wants hairlines and nothing else.

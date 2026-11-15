@@ -357,9 +357,20 @@ class Ledger:
         )
 
     def commit(self) -> None:
-        """Push this shard to the Volume so other containers can read it."""
-        if self.volume is not None:
+        """Push this shard to the Volume so other containers can read it.
+
+        A no-op failure inside a Sandbox is expected and harmless: sandbox
+        writes to a mounted Volume persist on their own (verified by probe --
+        a file written with no commit at all was readable from outside), and
+        `volume.commit()` raises there because a Sandbox is not a Function.
+        Raising would make the caller think the spend was lost when it was not.
+        """
+        if self.volume is None:
+            return
+        try:
             self.volume.commit()
+        except Exception:  # noqa: BLE001 - sandboxes auto-persist; see above
+            pass
 
     # -- reading ---------------------------------------------------------
 
@@ -377,9 +388,20 @@ class Ledger:
         shards that existed when it started, and under-reports by exactly the
         branches that launched after it. A missed reload is invisible -- the
         number still looks like a number.
+
+        But a **Sandbox is not a Function**, and Modal raises "reload() can
+        only be called from within a running function" there. Letting that
+        propagate made every branch's spend read as $0 -- the shards were being
+        written correctly the whole time and the reader was throwing. So a
+        failed reload degrades to "read what is already mounted" rather than
+        to an exception: a slightly stale total beats no total, because the
+        budget guard consumes this number.
         """
         if reload and self.volume is not None:
-            self.volume.reload()
+            try:
+                self.volume.reload()
+            except Exception:  # noqa: BLE001 - see above; sandboxes cannot reload
+                pass
         wanted = run_id if run_id is not None else (self.run_id or None)
         out: list[LedgerEntry] = []
         skipped = 0

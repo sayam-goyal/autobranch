@@ -141,6 +141,7 @@ class BranchRunner:
         self.clock = clock
         self.max_iterations = max_iterations
         self.state = BranchState.load(self._state_path)
+        self._usage_mark = None
         if env.reward_config and not self.state.reward_config:
             self.state.reward_config = env.reward_config
 
@@ -299,6 +300,52 @@ class BranchRunner:
             best_sibling=self._tree().best_score(self.spec.objective),
         )
 
+    def _sync_spend(self) -> None:
+        """Pull the authoritative total out of the ledger into branch state.
+
+        The ledger's shard aggregate is the real number -- it sees every
+        writer. State carries a copy so the registry (and therefore the UI and
+        the artifact) can show spend, and so the budget guard still has a
+        non-zero figure if a ledger read fails. Reporting $0 when a read fails
+        would mean the cap never fires.
+        """
+        if self.ledger is None:
+            return
+        try:
+            self.state.spend_usd = float(self.ledger.total_usd())
+            self.state.tokens = int(self.ledger.tokens())
+        except Exception:  # noqa: BLE001 - keep the last known figure
+            pass
+
+    def _record_llm_usage(self) -> None:
+        """Bill the agent's own tokens. They are real money: $2/$10 per Mtok.
+
+        Read as a delta off the client's cumulative counter, so a retry or a
+        correction turn is charged exactly once.
+        """
+        kimi = getattr(self.agent, "kimi", None)
+        if self.ledger is None or kimi is None:
+            return
+        try:
+            from autobranch.kimi import Usage, usage_minus
+
+            now = getattr(kimi, "total_usage", None)
+            if now is None:
+                return
+            before = self._usage_mark or Usage()
+            delta = usage_minus(now, before)
+            self._usage_mark = now
+            if delta.prompt_tokens or delta.completion_tokens:
+                self.ledger.record_llm(
+                    tokens_in=delta.prompt_tokens,
+                    tokens_out=delta.completion_tokens,
+                    branch_id=self.env.branch_id,
+                    note="agent decision",
+                )
+                self.ledger.commit()
+        except Exception:  # noqa: BLE001 - accounting must not kill a branch
+            pass
+
     def _decide(self):
         """Ask the agent for one action, with the tree's results in context."""
         self._activity("thinking (asking the model for its next action)")
@@ -306,6 +353,8 @@ class BranchRunner:
         spend, tokens = self._budget_spent()
         context = self._build_context(tree, spend, tokens)
         action = self.agent.next_action(context)
+        self._record_llm_usage()
+        self._sync_spend()
         validate_action(action, self.spec)  # defence in depth; the agent also validates
         return action
 
@@ -427,6 +476,7 @@ class BranchRunner:
                 self.ledger.commit()
             except Exception:  # noqa: BLE001
                 pass
+        self._sync_spend()
         self._persist()
         self._event(f"trained {steps} steps in {elapsed:.0f}s (total {self.state.steps_done})")
         # Deliberately NOT returning throughput: steps are not progress.
@@ -681,6 +731,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     outcome = runner.run()
     print(json.dumps(outcome), flush=True)
+
+    # Terminate our own sandbox. The sandbox's main process is `sleep
+    # infinity` (the loop runs as an exec), so without this it stays billable
+    # until its timeout -- a finished run left 15 sandboxes alive for an hour
+    # each. The loop's result is already on the volume and in the registry, so
+    # there is nothing left to lose by exiting.
+    try:
+        from autobranch.forking import self_sandbox
+
+        self_sandbox().terminate()
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not terminate own sandbox ({exc}); it will stop at its timeout",
+              flush=True)
+
     return 0 if outcome.get("status") in ("succeeded", "abandoned") else 1
 
 

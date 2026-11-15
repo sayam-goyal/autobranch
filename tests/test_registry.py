@@ -348,3 +348,63 @@ def test_update_branch_rejects_unknown_fields(reg):
         reg.update_branch(run.run_id, "b0", reward="nope")
     with pytest.raises(KeyError):
         reg.update_branch(run.run_id, "b9", status="running")
+
+
+# ---- a finished run must actually finish -----------------------------
+
+def _done(reg, run_id, bid, status, *, scores=None, parent=None, spend=0.0):
+    reg.put_branch(run_id, BranchRecord(
+        branch_id=bid, parent_id=parent, depth=0 if parent is None else 1,
+        status=status, scores=scores or [], spend_usd=spend,
+    ))
+
+
+def test_a_run_whose_branches_are_all_done_reports_terminal(reg):
+    """The bug this guards: a finished run sat at `running` with its elapsed
+    clock ticking forever, because nothing owns "the run is over" -- each
+    branch only knows about itself."""
+    run = _run(reg, run_id="r-fin")
+    reg.update_run("r-fin", state="running")
+    _done(reg, "r-fin", "b0", "succeeded", scores=[{"step": 10, "score": 0.9}])
+    _done(reg, "r-fin", "b0.1", "abandoned", parent="b0")
+
+    got = reg.get_run("r-fin")
+    assert got.state == "succeeded"
+
+    # And it stays frozen: a later read must not keep advancing elapsed.
+    first = got.elapsed_s
+    again = reg.get_run("r-fin")
+    assert again.state == "succeeded"
+    assert again.elapsed_s == pytest.approx(first)
+
+
+def test_a_run_still_working_stays_running(reg):
+    _run(reg, run_id="r-busy")
+    reg.update_run("r-busy", state="running")
+    _done(reg, "r-busy", "b0", "succeeded", scores=[{"step": 1, "score": 0.5}])
+    _done(reg, "r-busy", "b0.1", "running", parent="b0")
+    assert reg.get_run("r-busy").state == "running"
+
+
+def test_a_run_where_nothing_was_measured_is_a_failure(reg):
+    """A tree where every branch died without scoring is a failed run, not a
+    successful one that happens to have no result."""
+    _run(reg, run_id="r-dud")
+    reg.update_run("r-dud", state="running")
+    _done(reg, "r-dud", "b0", "failed")
+    _done(reg, "r-dud", "b0.1", "abandoned", parent="b0")
+    assert reg.get_run("r-dud").state == "failed"
+
+
+def test_run_spend_falls_back_to_branch_records_off_volume(reg):
+    _run(reg, run_id="r-cost")
+    _done(reg, "r-cost", "b0", "succeeded",
+          scores=[{"step": 1, "score": 0.1}], spend=0.25)
+    _done(reg, "r-cost", "b0.1", "abandoned", parent="b0", spend=0.10)
+    assert reg.get_run("r-cost").spend_usd == pytest.approx(0.35)
+
+
+def test_a_run_with_no_branches_yet_is_not_declared_finished(reg):
+    _run(reg, run_id="r-new")
+    reg.update_run("r-new", state="running")
+    assert reg.get_run("r-new").state == "running"

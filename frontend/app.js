@@ -181,6 +181,9 @@
 
   function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
 
+  /* `plural` just adds an "s"; a few words in this UI need a real plural. */
+  function pluralise(n, one, many) { return n + " " + (n === 1 ? one : many); }
+
   function statusClass(status) {
     return STATUS_ORDER[status] === undefined ? "pending" : status;
   }
@@ -2193,7 +2196,7 @@
       '<section class="pf-sec pf-signals" data-problem="manifest.signals">' +
       '<div class="pf-sec-head">' +
       '<p class="eyebrow">Signals</p>' +
-      '<span class="panel-note mono">' + esc(plural(signals.length, "signal")) +
+      '<span class="region-note mono">' + esc(plural(signals.length, "signal")) +
       " declared · the whole vocabulary a reward may be built from</span>" +
       "</div>" +
       '<div class="table-scroll">' +
@@ -2324,173 +2327,396 @@
   ].join("\n");
 
   /* ───────────────────────────── tree layout ─────────────────────────────
-     A tidy layout in two passes. Pass one walks the forest depth-first and
-     hands every leaf the next free column; an internal node takes the mean of
-     its children's columns. Because leaf columns are unique and a subtree owns
-     a contiguous column range, parents centred over their children can never
-     collide with a sibling subtree — no contour shifting required for the
-     shapes a reward search produces. Pass two multiplies columns and depth by
-     fixed pitches to get pixels.
+     Two guarantees, in this order of importance.
+
+     (1) NOTHING FLOATS. A branch id encodes its own lineage by construction:
+         b0 → b0.1 → b0.1.2. A parent id is therefore always derivable by
+         stripping the last ".N" segment, and `resolveParent` tries, in order:
+
+           a. `parent_id`, when that branch is actually present in the payload;
+           b. the id-derived ancestor chain — b0.1.1 → b0.1 → b0 — walking up
+              until it reaches a branch that IS present, synthesising a visibly
+              marked "record missing" placeholder for any intermediate id that
+              is genuinely absent, so the chain still reaches all the way down;
+           c. the single root, for an id with no derivable ancestor at all.
+
+         Exactly one node ends up without a parent. A second root is
+         impossible: any extra root candidate is re-parented onto the first
+         with a dashed "unlinked" edge rather than left loose on the canvas.
+         `failed` and `abandoned` branches are ordinary members of the tree —
+         same position, same edge to their parent, only de-emphasised paint —
+         so the floating boxes a watcher used to see for dead branches cannot
+         be drawn from here. The invariant check at the bottom of this function
+         says so out loud, in the console, if the code above it ever regresses.
+
+     (2) THE CANVAS IS THE CONTENT. Row depth comes from the resolved tree, not
+         from `branch.depth`, so an edge can never point upwards; and the svg
+         is sized to the node bounding box plus PAD, never to a fixed height,
+         so a two-node tree is a two-node-tall strip.
+
+     Layout itself is a tidy two-pass: every leaf takes the next free column,
+     an internal node takes the midpoint of its children's columns. Leaf
+     columns are unique and a subtree owns a contiguous range, so a parent
+     centred over its children cannot collide with a sibling subtree.
      ------------------------------------------------------------------------ */
 
-  var NODE_W = 244;
-  var NODE_H = 118;
-  var GAP_X = 32;
-  var GAP_Y = 58;
-  var PAD = 18;
+  var NODE_W = 236;
+  var NODE_H = 76;
+  var GAP_X = 26;
+  var GAP_Y = 38;
+  var PAD = 14;
+  var MAX_CHAIN = 64;
+
+  /* b0.1.1 → b0.1 → b0 → null. An id with no "." has no derivable parent. */
+  function parentFromId(id) {
+    var text = String(id == null ? "" : id);
+    var cut = text.lastIndexOf(".");
+    if (cut <= 0) { return null; }
+    return text.slice(0, cut);
+  }
 
   function layoutTree(branches) {
     var byId = {};
-    branches.forEach(function (b) { byId[b.branch_id] = b; });
+    var order = [];
+    var notes = [];
+    var synthesised = 0;
 
-    var children = {};
-    var roots = [];
-    branches.forEach(function (b) {
-      if (b.parent_id && byId[b.parent_id]) {
-        if (!children[b.parent_id]) { children[b.parent_id] = []; }
-        children[b.parent_id].push(b.branch_id);
-      } else {
-        roots.push(b.branch_id);
-      }
-    });
-
-    var columns = {};
-    var nextColumn = 0;
-    var seen = {};
-
-    function assign(id) {
-      if (seen[id]) { return columns[id]; }
-      seen[id] = true;
-      var kids = children[id] || [];
-      if (!kids.length) {
-        columns[id] = nextColumn;
-        nextColumn += 1;
-        return columns[id];
-      }
-      var cols = kids.map(assign);
-      columns[id] = (Math.min.apply(null, cols) + Math.max.apply(null, cols)) / 2;
-      return columns[id];
+    function addNode(branch, placeholder) {
+      var id = String(branch.branch_id);
+      if (byId[id]) { return byId[id]; }
+      var node = {
+        id: id,
+        branch: branch,
+        placeholder: Boolean(placeholder),
+        parent: null,
+        link: null,
+        kids: [],
+        level: 0,
+        column: null,
+        x: 0,
+        y: 0
+      };
+      byId[id] = node;
+      order.push(node);
+      return node;
     }
 
-    roots.forEach(assign);
-    /* Defensive: a cycle in parent_id would leave nodes unassigned. */
-    branches.forEach(function (b) {
-      if (columns[b.branch_id] === undefined) {
-        columns[b.branch_id] = nextColumn;
-        nextColumn += 1;
+    (branches || []).forEach(function (b) {
+      if (b && b.branch_id != null) { addNode(b, false); }
+    });
+
+    /* `chain` runs from a node's immediate derived parent upwards; `anchor` is
+       the first id that really exists, or null when the chain runs off the top
+       of the tree (the root pass then links the topmost placeholder). */
+    function attachChain(chain, anchor) {
+      var child = null;
+      for (var i = 0; i < chain.length; i += 1) {
+        var ph = addNode({
+          branch_id: chain[i],
+          parent_id: null,
+          depth: null,
+          status: "missing",
+          scores: [],
+          reward_config: null
+        }, true);
+        synthesised += 1;
+        notes.push("no branch record for " + chain[i] + " — drawn as a placeholder so its children stay attached");
+        if (child) { child.parent = ph; child.link = "derived"; }
+        child = ph;
+      }
+      if (child) {
+        child.parent = anchor;
+        child.link = anchor ? "derived" : null;
+      }
+      return byId[chain[0]];
+    }
+
+    function resolveParent(node) {
+      var pid = node.branch && node.branch.parent_id != null
+        ? String(node.branch.parent_id)
+        : "";
+
+      /* (a) the recorded parent, when it is really in the payload */
+      if (pid && pid !== node.id && byId[pid]) {
+        node.link = "recorded";
+        return byId[pid];
+      }
+      if (pid && pid !== node.id) {
+        notes.push("branch " + node.id + " names parent " + pid + ", which is not in this payload — parent derived from the id");
+      }
+
+      /* (b) the id-derived ancestor chain */
+      var chain = [];
+      var cursor = parentFromId(node.id);
+      while (cursor && chain.length < MAX_CHAIN) {
+        if (byId[cursor]) {
+          node.link = "derived";
+          return chain.length ? attachChain(chain, byId[cursor]) : byId[cursor];
+        }
+        chain.push(cursor);
+        cursor = parentFromId(cursor);
+      }
+      if (chain.length) {
+        node.link = "derived";
+        return attachChain(chain, null);
+      }
+
+      /* (c) nothing derivable: the root pass below attaches it to the root */
+      return null;
+    }
+
+    /* Only real branches are resolved; placeholders are linked as they are
+       created, and `order` grows underneath us, hence the snapshot. */
+    order.slice().forEach(function (node) {
+      node.parent = resolveParent(node);
+    });
+
+    /* A parent_id cycle would leave the forest rootless. Cut it rather than
+       drop the nodes it contains. */
+    order.forEach(function (node) {
+      var seen = {};
+      var cursor = node;
+      var guard = 0;
+      while (cursor && cursor.parent && guard < 512) {
+        if (seen[cursor.id]) {
+          notes.push("parent cycle through " + cursor.id + " — one link cut to keep the tree a tree");
+          cursor.parent = null;
+          cursor.link = null;
+          break;
+        }
+        seen[cursor.id] = true;
+        cursor = cursor.parent;
+        guard += 1;
       }
     });
 
-    var maxDepth = 0;
-    var nodes = branches.map(function (b) {
-      var depth = typeof b.depth === "number" ? b.depth : 0;
-      maxDepth = Math.max(maxDepth, depth);
-      return {
-        branch: b,
-        x: PAD + columns[b.branch_id] * (NODE_W + GAP_X),
-        y: PAD + depth * (NODE_H + GAP_Y)
-      };
+    /* One root, always. Prefer a real branch over a placeholder, then the
+       shortest id — b0 is a likelier root than b1.2. */
+    var candidates = order.filter(function (n) { return !n.parent; });
+    var root = null;
+    candidates.forEach(function (n) {
+      if (!root) { root = n; return; }
+      var rank = (Number(n.placeholder) - Number(root.placeholder)) ||
+        (n.id.length - root.id.length);
+      if (rank < 0) { root = n; }
+    });
+    candidates.forEach(function (n) {
+      if (n === root) { return; }
+      n.parent = root;
+      n.link = "unlinked";
+      notes.push("branch " + n.id + " has no derivable parent — attached to the root " + root.id + " with a dashed edge rather than floated");
     });
 
-    var byNode = {};
-    nodes.forEach(function (n) { byNode[n.branch.branch_id] = n; });
+    order.forEach(function (n) { n.kids = []; });
+    order.forEach(function (n) { if (n.parent) { n.parent.kids.push(n); } });
+
+    /* Depth from the resolved tree, so a node always sits below its parent. */
+    var reached = [];
+    if (root) {
+      root.level = 0;
+      reached.push(root);
+      for (var head = 0; head < reached.length; head += 1) {
+        var here = reached[head];
+        for (var k = 0; k < here.kids.length; k += 1) {
+          here.kids[k].level = here.level + 1;
+          reached.push(here.kids[k]);
+        }
+      }
+    }
+
+    var nextColumn = 0;
+    function assignColumns(node) {
+      if (node.column !== null) { return node.column; }
+      if (!node.kids.length) {
+        node.column = nextColumn;
+        nextColumn += 1;
+        return node.column;
+      }
+      var cols = node.kids.map(assignColumns);
+      node.column = (Math.min.apply(null, cols) + Math.max.apply(null, cols)) / 2;
+      return node.column;
+    }
+    if (root) { assignColumns(root); }
+    order.forEach(function (n) {
+      if (n.column === null) { n.column = nextColumn; nextColumn += 1; }
+    });
+
+    order.forEach(function (n) {
+      n.x = PAD + n.column * (NODE_W + GAP_X);
+      n.y = PAD + n.level * (NODE_H + GAP_Y);
+    });
+
+    /* Size to the actual bounding box plus PAD, and shift the content so the
+       box starts at PAD — no empty acreage under a short tree. */
+    var minX = Infinity;
+    var minY = Infinity;
+    var maxX = -Infinity;
+    var maxY = -Infinity;
+    order.forEach(function (n) {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + NODE_W);
+      maxY = Math.max(maxY, n.y + NODE_H);
+    });
+    if (!order.length) { minX = minY = maxX = maxY = 0; }
+    var dx = PAD - minX;
+    var dy = PAD - minY;
+    order.forEach(function (n) { n.x += dx; n.y += dy; });
 
     var edges = [];
-    branches.forEach(function (b) {
-      if (!b.parent_id || !byNode[b.parent_id]) { return; }
-      edges.push({ from: byNode[b.parent_id], to: byNode[b.branch_id] });
+    order.forEach(function (n) {
+      if (!n.parent) { return; }
+      edges.push({ from: n.parent, to: n, kind: n.link || "derived" });
     });
 
+    /* The invariant, asserted rather than assumed: one root, and every other
+       node owns exactly one edge. Breaking it is the bug that used to show up
+       as a floating box, so it belongs in the console, not on the canvas. */
+    var incoming = {};
+    edges.forEach(function (e) { incoming[e.to.id] = (incoming[e.to.id] || 0) + 1; });
+    var orphans = order.filter(function (n) {
+      return n !== root && incoming[n.id] !== 1;
+    }).map(function (n) { return n.id; });
+
+    var audit = {
+      nodes: order.length,
+      edges: edges.length,
+      root: root ? root.id : null,
+      roots: order.filter(function (n) { return !n.parent; }).length,
+      placeholders: synthesised,
+      inferred: edges.filter(function (e) { return e.kind !== "recorded"; }).length,
+      orphans: orphans,
+      notes: notes,
+      ok: true
+    };
+    if (order.length && (orphans.length || audit.roots > 1 || edges.length !== order.length - 1)) {
+      audit.ok = false;
+      if (window.console && window.console.error) {
+        window.console.error(
+          "autobranch: sandbox-tree invariant broken — a node would render with no edge to its parent. " +
+          "This is a bug in layoutTree(), not in the data.", audit
+        );
+      }
+    }
+    /* Parked on `window` so the invariant is inspectable from the console. */
+    window.AUTOBRANCH_TREE_AUDIT = audit;
+
     return {
-      nodes: nodes,
+      nodes: order,
       edges: edges,
-      width: PAD * 2 + Math.max(1, nextColumn) * (NODE_W + GAP_X) - GAP_X,
-      height: PAD * 2 + (maxDepth + 1) * (NODE_H + GAP_Y) - GAP_Y
+      root: root,
+      audit: audit,
+      nodeW: NODE_W,
+      nodeH: NODE_H,
+      width: Math.round(order.length ? maxX + dx + PAD : 0),
+      height: Math.round(order.length ? maxY + dy + PAD : 0)
     };
   }
 
-  /* Each node is a Modal sandbox: its short id, its live status, its best
-     objective score, and the line that answers "what is it doing". */
+  /* One node, one Modal sandbox, three rows: what it is and its status; the
+     objective score it reached and the sandbox it ran in; what it is doing.
+     The reward weights used to be printed here too and were unreadable at
+     35 truncated characters — they live in the Sandbox tab, in full. */
+  function nodeMarkup(run, node, bestId) {
+    var b = node.branch;
+    var x = node.x;
+    var y = node.y;
+
+    if (node.placeholder) {
+      return '<g class="node is-placeholder" aria-hidden="true">' +
+        '<rect class="node-box" rx="3" x="' + x + '" y="' + y + '" width="' + NODE_W + '" height="' + NODE_H + '"></rect>' +
+        '<text class="node-id" x="' + (x + 14) + '" y="' + (y + 28) + '">' + esc(node.id) + "</text>" +
+        '<text class="node-status" x="' + (x + NODE_W - 14) + '" y="' + (y + 28) + '" text-anchor="end">MISSING</text>' +
+        '<text class="node-meta" x="' + (x + 14) + '" y="' + (y + 52) + '">record missing · inferred from a child id</text>' +
+        "</g>";
+    }
+
+    var s = statusClass(b.status);
+    var spent = s === "abandoned" || s === "failed";
+    var best = bestId === node.id;
+    var score = bestScoreOf(b);
+    var sandbox = sandboxOf(run, b);
+    var act = activityOf(run, b);
+    var live = isLiveBranch(run, s);
+    var label = statusLabel(run, s);
+
+    var classes = ["node", "status-" + s];
+    if (spent) { classes.push("is-spent"); }
+    if (best) { classes.push("is-best"); }
+    if (state.selected === node.id) { classes.push("is-selected"); }
+
+    var aria = "sandbox " + (sandbox || "not yet created") + ", branch " + node.id +
+      ", " + label + ", objective " + fmtScore(score) + ", " + act.text +
+      (best ? ", best in this run" : "") + (spent ? ", this line is finished" : "");
+
+    var sandboxText = sandbox
+      ? shortSandbox(sandbox)
+      : (s === "pending" && live ? "sandbox starting…" : "no sandbox id");
+
+    return '<g class="' + classes.join(" ") + '" tabindex="0" role="button" ' +
+      'data-branch="' + esc(node.id) + '" aria-label="' + esc(aria) + '">' +
+      '<rect class="node-ring" rx="5" x="' + (x - 3) + '" y="' + (y - 3) + '" width="' + (NODE_W + 6) + '" height="' + (NODE_H + 6) + '"></rect>' +
+      '<rect class="node-box" rx="3" x="' + x + '" y="' + y + '" width="' + NODE_W + '" height="' + NODE_H + '"></rect>' +
+      '<line class="node-stripe stripe-' + s + '" x1="' + (x + 1.5) + '" y1="' + (y + 2) + '" x2="' + (x + 1.5) + '" y2="' + (y + NODE_H - 2) + '"></line>' +
+
+      '<text class="node-id" x="' + (x + 14) + '" y="' + (y + 20) + '">' + esc(node.id) + "</text>" +
+      '<text class="node-status text-' + s + '" x="' + (x + NODE_W - 14) + '" y="' + (y + 20) + '" text-anchor="end">' +
+      esc(label.toUpperCase()) + "</text>" +
+
+      '<text class="node-score" x="' + (x + 14) + '" y="' + (y + 44) + '">' + esc(fmtScore(score)) + "</text>" +
+      '<text class="node-meta" x="' + (x + NODE_W - 14) + '" y="' + (y + 44) + '" text-anchor="end">' +
+      esc(sandboxText) + "</text>" +
+
+      '<circle class="node-pip pip-' + s + (live ? " pulse" : "") + '" cx="' + (x + 17) + '" cy="' + (y + 61) + '" r="3"></circle>' +
+      '<text class="node-activity' + (act.level === "warn" || act.level === "error" ? " is-" + act.level : "") +
+      '" x="' + (x + 27) + '" y="' + (y + 64) + '">' + esc(truncate(act.text, best ? 24 : 30)) + "</text>" +
+      (best
+        ? '<text class="best-tag" x="' + (x + NODE_W - 14) + '" y="' + (y + 64) + '" text-anchor="end">BEST</text>'
+        : "") +
+      "</g>";
+  }
+
   function renderTree(svg, run) {
     var branches = (run && run.branches) || [];
+
     if (!branches.length) {
-      svg.setAttribute("width", "420");
-      svg.setAttribute("height", "80");
-      svg.setAttribute("viewBox", "0 0 420 80");
-      svg.innerHTML = '<text class="node-meta" x="18" y="44">no sandboxes yet — the first one is being created</text>';
+      /* A compact strip, not a canvas waiting for content. */
+      svg.setAttribute("width", "340");
+      svg.setAttribute("height", "36");
+      svg.setAttribute("viewBox", "0 0 340 36");
+      svg.innerHTML = '<text class="node-meta" x="14" y="22">no sandboxes yet — the first one is being created</text>';
       svg.__layout = null;
       return;
     }
 
     var tree = layoutTree(branches);
     var bestId = run.best && run.best.branch_id;
+
     svg.setAttribute("width", String(tree.width));
     svg.setAttribute("height", String(tree.height));
     svg.setAttribute("viewBox", "0 0 " + tree.width + " " + tree.height);
 
     var parts = [];
 
+    /* Edges first so a node box always paints over its own elbow. Dashed means
+       "inferred" (derived from the id, or re-parented onto the root); a spent
+       line is thinner and lighter but never invisible — an edge no one can see
+       is what makes a dead branch look like it is floating. */
     tree.edges.forEach(function (e) {
-      var x1 = e.from.x + NODE_W / 2;
-      var y1 = e.from.y + NODE_H;
-      var x2 = e.to.x + NODE_W / 2;
+      var x1 = e.from.x + tree.nodeW / 2;
+      var y1 = e.from.y + tree.nodeH;
+      var x2 = e.to.x + tree.nodeW / 2;
       var y2 = e.to.y;
-      var mid = y1 + GAP_Y / 2;
-      var faded = e.to.branch.status === "abandoned" || e.to.branch.status === "failed";
-      parts.push('<path class="tree-edge' + (faded ? " is-faded" : "") + '" d="M' + x1 + " " + y1 +
+      var mid = y1 + Math.max(10, (y2 - y1) / 2);
+      var cls = ["tree-edge", "edge-" + e.kind];
+      var status = statusClass(e.to.branch && e.to.branch.status);
+      if (status === "abandoned" || status === "failed") { cls.push("is-spent"); }
+      parts.push('<path class="' + cls.join(" ") + '" d="M' + x1 + " " + y1 +
         " V" + mid + " H" + x2 + " V" + y2 + '"></path>');
     });
 
     tree.nodes.forEach(function (n) {
-      var b = n.branch;
-      var s = statusClass(b.status);
-      var abandoned = s === "abandoned" || s === "failed";
-      var best = bestId === b.branch_id;
-      var score = bestScoreOf(b);
-      var sandbox = sandboxOf(run, b);
-      var act = activityOf(run, b);
-      var live = isLiveBranch(run, s);
-      var label = statusLabel(run, s);
-
-      var classes = ["node", "status-" + s];
-      if (abandoned) { classes.push("is-abandoned"); }
-      if (best) { classes.push("is-best"); }
-      if (state.selected === b.branch_id) { classes.push("is-selected"); }
-
-      var aria = "sandbox " + (sandbox || "not yet created") + ", branch " + b.branch_id +
-        ", " + label + ", objective " + fmtScore(score) + ", " + act.text +
-        (abandoned ? ", abandoned line" : "");
-
-      var sandboxText = sandbox
-        ? shortSandbox(sandbox)
-        : (s === "pending" && live ? "sandbox starting…" : "no sandbox id");
-
-      parts.push(
-        '<g class="' + classes.join(" ") + '" tabindex="0" role="button" ' +
-        'data-branch="' + esc(b.branch_id) + '" aria-label="' + esc(aria) + '">' +
-        '<rect class="node-ring" rx="5" x="' + (n.x - 3) + '" y="' + (n.y - 3) + '" width="' + (NODE_W + 6) + '" height="' + (NODE_H + 6) + '"></rect>' +
-        '<rect class="node-box" rx="3" x="' + n.x + '" y="' + n.y + '" width="' + NODE_W + '" height="' + NODE_H + '"></rect>' +
-        '<line class="node-stripe stripe-' + s + '" x1="' + (n.x + 1.25) + '" y1="' + (n.y + 2) + '" x2="' + (n.x + 1.25) + '" y2="' + (n.y + NODE_H - 2) + '"></line>' +
-
-        '<text class="node-sandbox" x="' + (n.x + 14) + '" y="' + (n.y + 20) + '">' + esc(sandboxText) + "</text>" +
-        (best ? '<text class="best-tag" x="' + (n.x + NODE_W - 12) + '" y="' + (n.y + 20) + '" text-anchor="end">BEST</text>' : "") +
-
-        '<text class="node-id" x="' + (n.x + 14) + '" y="' + (n.y + 40) + '">' + esc(b.branch_id) + (abandoned ? " ✕" : "") + "</text>" +
-        '<text class="node-status text-' + s + '" x="' + (n.x + NODE_W - 12) + '" y="' + (n.y + 40) + '" text-anchor="end">' +
-        esc(label.toUpperCase()) + "</text>" +
-
-        '<text class="node-score" x="' + (n.x + 14) + '" y="' + (n.y + 62) + '">' + esc(fmtScore(score)) + "</text>" +
-        '<text class="node-meta" x="' + (n.x + NODE_W - 12) + '" y="' + (n.y + 62) + '" text-anchor="end">' +
-        esc(fmtUsd(b.spend_usd)) + "</text>" +
-
-        '<circle class="node-pip pip-' + s + (live ? " pulse" : "") + '" cx="' + (n.x + 18) + '" cy="' + (n.y + 78) + '" r="3"></circle>' +
-        '<text class="node-activity' + (act.level === "warn" || act.level === "error" ? " is-" + act.level : "") +
-        '" x="' + (n.x + 28) + '" y="' + (n.y + 81) + '">' + esc(truncate(act.text, 33)) + "</text>" +
-
-        '<text class="node-meta" x="' + (n.x + 14) + '" y="' + (n.y + 98) + '">' + esc(truncate(weightsSummary(b.reward_config), 35)) + "</text>" +
-        '<text class="node-meta" x="' + (n.x + 14) + '" y="' + (n.y + 111) + '">' + esc(truncate(opsSummary(b.reward_config), 35)) + "</text>" +
-        "</g>"
-      );
+      parts.push(nodeMarkup(run, n, bestId));
     });
 
     svg.innerHTML = parts.join("");
@@ -2500,15 +2726,16 @@
   function scrollNodeIntoView(scroller, branchId) {
     var svg = scroller.querySelector(".tree-svg");
     if (!svg || !svg.__layout) { return; }
+    var layout = svg.__layout;
     var hit = null;
-    svg.__layout.nodes.forEach(function (n) {
-      if (n.branch.branch_id === branchId) { hit = n; }
+    layout.nodes.forEach(function (n) {
+      if (n.id === branchId) { hit = n; }
     });
     if (!hit) { return; }
-    var targetLeft = hit.x + NODE_W / 2 - scroller.clientWidth / 2;
-    var targetTop = hit.y + NODE_H / 2 - scroller.clientHeight / 2;
-    scroller.scrollLeft = clamp(targetLeft, 0, Math.max(0, svg.__layout.width - scroller.clientWidth));
-    scroller.scrollTop = clamp(targetTop, 0, Math.max(0, svg.__layout.height - scroller.clientHeight));
+    var targetLeft = hit.x + layout.nodeW / 2 - scroller.clientWidth / 2;
+    var targetTop = hit.y + layout.nodeH / 2 - scroller.clientHeight / 2;
+    scroller.scrollLeft = clamp(targetLeft, 0, Math.max(0, layout.width - scroller.clientWidth));
+    scroller.scrollTop = clamp(targetTop, 0, Math.max(0, layout.height - scroller.clientHeight));
   }
 
   /* ───────────────────────────── status chips ───────────────────────────── */
@@ -2523,7 +2750,8 @@
       return;
     }
     list.innerHTML = shown.map(function (s) {
-      return '<li class="chip-status st-text-' + s + '">' +
+      return '<li class="chip-status st-text-' + s + '" title="' +
+        esc(pluralise(counts[s], "sandbox", "sandboxes") + " " + statusLabel(run, s)) + '">' +
         '<span class="dot st-' + s + (isLiveBranch(run, s) ? " pulse" : "") + '" aria-hidden="true"></span>' +
         '<span class="mono num">' + counts[s] + "</span>" +
         '<span class="chip-status-label">' + esc(statusLabel(run, s)) + "</span>" +
@@ -2533,15 +2761,27 @@
 
   /* ───────────────────────────── detail panel ───────────────────────────── */
 
+  /* Root → this branch, under the same lineage rule the tree draws: the
+     recorded parent_id when that branch is present, otherwise the parent the
+     id itself implies, so a missing record never truncates the path. */
   function lineageOf(run, branchId) {
     var byId = {};
     ((run && run.branches) || []).forEach(function (b) { byId[b.branch_id] = b; });
     var path = [];
+    var seen = {};
     var cursor = byId[branchId];
     var guard = 0;
-    while (cursor && guard < 64) {
+    while (cursor && guard < 64 && !seen[cursor.branch_id]) {
+      seen[cursor.branch_id] = true;
       path.unshift(cursor);
-      cursor = cursor.parent_id ? byId[cursor.parent_id] : null;
+      var pid = cursor.parent_id == null ? "" : String(cursor.parent_id);
+      var next = pid && byId[pid] ? byId[pid] : null;
+      if (!next) {
+        var derived = parentFromId(cursor.branch_id);
+        while (derived && !byId[derived]) { derived = parentFromId(derived); }
+        next = derived ? byId[derived] : null;
+      }
+      cursor = next;
       guard += 1;
     }
     return path;
@@ -2551,7 +2791,7 @@
     if (!state.selected) {
       panel.innerHTML =
         '<div class="detail-head"><div><p class="eyebrow">Sandbox detail</p>' +
-        '<p class="detail-path">Click a node in the tree, or a row in the table.</p></div></div>' +
+        '<p class="detail-path">Pick a node in the tree above, or a row under “All sandboxes”.</p></div></div>' +
         '<div class="detail-section"><p class="rationale">Every sandbox keeps its reward config, its score history, its spend, and the rationale the agent wrote before it forked. The abandoned ones keep theirs too — that is what losers.json is for.</p></div>';
       return;
     }
@@ -2570,7 +2810,7 @@
         " Forks are announced by their parent and register themselves once their sandbox is up;" +
         " this node will appear in the tree on one of the next refreshes.</p>" +
         (eventsFor(run, state.selected).length
-          ? '<ol class="timeline">' + eventsFor(run, state.selected).slice(-10).reverse().map(function (e) {
+          ? '<ol class="timeline" tabindex="0">' + eventsFor(run, state.selected).slice(-10).reverse().map(function (e) {
               var level = e.level === "warn" || e.level === "error" ? e.level : "info";
               return '<li class="timeline-' + level + '">' +
                 '<span class="timeline-ts mono">' + esc(fmtClock(e.ts)) + "</span>" +
@@ -2615,7 +2855,10 @@
       "</p>" +
       "</div>" +
 
-      '<div class="detail-section">' +
+      /* Numbers and the score history belong together: two adjacent boxes
+         saying one thing become one box saying it. */
+      '<div class="detail-section detail-split">' +
+      "<div>" +
       '<dl class="kv-grid">' +
       "<div><dt>Best objective</dt><dd" + (run.best && run.best.branch_id === branch.branch_id ? ' class="accent"' : "") + ">" + esc(fmtScore(score)) + "</dd></div>" +
       "<div><dt>Latest eval</dt><dd>" + esc(last ? fmtScore(last.score) : "—") + "</dd></div>" +
@@ -2625,8 +2868,7 @@
       "<div><dt>Agent tokens</dt><dd>" + esc(fmtTokens(branch.tokens)) + "</dd></div>" +
       "</dl>" +
       "</div>" +
-
-      '<div class="detail-section">' +
+      "<div>" +
       '<p class="eyebrow">Objective score history</p>' +
       sparkline(branch.scores, { faint: abandoned, width: 320, height: 48 }) +
       '<p class="detail-path">' +
@@ -2636,11 +2878,27 @@
         : "no evaluations recorded yet") +
       "</p>" +
       "</div>" +
+      "</div>" +
+
+      '<div class="detail-section detail-split">' +
+      "<div>" +
+      '<p class="eyebrow">Agent rationale</p>' +
+      '<p class="rationale">' + esc(branch.rationale || "No rationale recorded for this branch.") + "</p>" +
+      (branch.abandoned_reason
+        ? '<p class="note-abandoned"><strong>' +
+          (s === "failed" ? "Failed:" : "Abandoned:") + "</strong> " + esc(branch.abandoned_reason) + "</p>"
+        : "") +
+      "</div>" +
+      "<div>" +
+      '<p class="eyebrow">Reward config</p>' +
+      '<pre class="code mono" tabindex="0">' + esc(JSON.stringify(branch.reward_config || {}, null, 2)) + "</pre>" +
+      "</div>" +
+      "</div>" +
 
       '<div class="detail-section">' +
       '<p class="eyebrow">This sandbox’s timeline</p>' +
       (timeline.length
-        ? '<ol class="timeline">' + timeline.map(function (e) {
+        ? '<ol class="timeline" tabindex="0">' + timeline.map(function (e) {
             var level = e.level === "warn" || e.level === "error" ? e.level : "info";
             return '<li class="timeline-' + level + '">' +
               '<span class="timeline-ts mono">' + esc(fmtClock(e.ts)) + "</span>" +
@@ -2649,19 +2907,6 @@
           }).join("") + "</ol>"
         : '<p class="spark-empty">no events recorded for this sandbox yet</p>') +
       '<p class="detail-path">newest first' + (timeline.length >= 40 ? " · last 40" : "") + "</p>" +
-      "</div>" +
-
-      '<div class="detail-section">' +
-      '<p class="eyebrow">Reward config</p>' +
-      '<pre class="code mono">' + esc(JSON.stringify(branch.reward_config || {}, null, 2)) + "</pre>" +
-      "</div>" +
-
-      '<div class="detail-section">' +
-      '<p class="eyebrow">Agent rationale</p>' +
-      '<p class="rationale">' + esc(branch.rationale || "No rationale recorded for this branch.") + "</p>" +
-      (branch.abandoned_reason
-        ? '<p class="note-abandoned"><strong>Abandoned:</strong> ' + esc(branch.abandoned_reason) + "</p>"
-        : "") +
       "</div>";
 
     panel.innerHTML = html;
@@ -2848,13 +3093,21 @@
 
       var live = 0;
       var spend = 0;
+      var best = null;
+      var bestRun = null;
       rows.forEach(function (row) {
         if (LIVE_STATES[row.state]) { live += 1; }
         spend += Number(row.spend_usd || 0);
+        if (row.best_score != null && (best == null || row.best_score > best)) {
+          best = row.best_score;
+          bestRun = row.run_id;
+        }
       });
       f("total").textContent = String(rows.length);
       f("live").textContent = String(live);
       f("spend").textContent = fmtUsd(spend);
+      f("best").textContent = fmtScore(best);
+      f("best").title = bestRun ? "best objective score so far, in " + bestRun : "no run has scored yet";
       f("poll-note").textContent = live
         ? "refreshing every " + (POLL_MS / 1000) + "s · " + plural(live, "run") + " live"
         : "all runs are finished · refresh paused";
@@ -2867,19 +3120,22 @@
           if (LIVE_STATES[s]) { cls.push("is-live"); }
           if (row.run_id === state.runId) { cls.push("is-current"); }
           var href = "#/run/" + encodeURIComponent(row.run_id);
+          /* Environment and objective are one fact about the run, not two
+             columns' worth: one cell, the objective dimmed behind it. */
           return '<tr class="' + cls.join(" ") + '" data-run="' + esc(row.run_id) + '" tabindex="0">' +
             '<td class="cell-id"><a href="' + esc(href) + '">' + esc(row.run_id) + "</a></td>" +
-            "<td>" + esc(row.env_name || "—") + "</td>" +
-            "<td>" + esc(row.objective_name || "—") + "</td>" +
+            "<td>" + esc(row.env_name || "—") +
+            '<span class="cell-aside">' + esc(row.objective_name || "no objective") + "</span></td>" +
             '<td><span class="dot st-' + s + (LIVE_STATES[s] ? " pulse" : "") + '"></span> ' +
             esc(s === "pending" ? "starting" : s) + "</td>" +
-            '<td class="num cell-score">' + esc(fmtScore(row.best_score)) + "</td>" +
+            '<td class="num cell-score' + (row.best_score != null ? " has-score" : "") + '">' +
+            esc(fmtScore(row.best_score)) + "</td>" +
             '<td class="cell-sandboxes">' + miniDots(meta, row.state) + "</td>" +
             '<td class="num">' + esc(fmtUsd(row.spend_usd)) + "</td>" +
             '<td class="num" data-age="' + esc(String(tsToMs(row.created_at))) + '" title="' +
             esc(fmtStamp(row.created_at)) + '">' + esc(ageText(row.created_at)) + "</td>" +
             "</tr>";
-        }).join("") || '<tr><td colspan="8">No runs yet. <a href="#/new">Submit a bundle</a> and this table fills in.</td></tr>';
+        }).join("") || '<tr><td colspan="7">No runs yet. <a href="#/new">Submit a bundle</a> and this table fills in.</td></tr>';
       });
     }
 
@@ -3245,27 +3501,115 @@
     var log = f("log");
     var clock = { elapsed: 0, at: Date.now(), live: false };
 
+    /* ── the one lower region ──
+       Exactly one pane is visible at a time. That is the organising idea of
+       this page: identity, the tree, and one thing underneath — the selected
+       sandbox, the whole table, or the run's activity — rather than three
+       permanent panels competing for the same glance. */
+    var TABS = ["sandbox", "all", "activity"];
+    var tabButtons = {};
+    var tabPanes = {
+      sandbox: root.querySelector("#pane-sandbox"),
+      all: root.querySelector("#pane-all"),
+      activity: root.querySelector("#pane-activity")
+    };
+    var activeTab = "sandbox";
+
+    function paintRegionNote() {
+      var note = f("region-note");
+      if (!note) { return; }
+      var run = state.run;
+      if (activeTab === "sandbox") {
+        note.textContent = state.selected ? "branch " + state.selected : "nothing selected";
+      } else if (activeTab === "all") {
+        note.textContent = pluralise(((run && run.branches) || []).length, "sandbox", "sandboxes") +
+          " · sorted by " + state.sort.key.replace(/_/g, " ") + " " + state.sort.dir;
+      } else {
+        note.textContent = plural(((run && run.events) || []).length, "event") +
+          (run && LIVE_STATES[run.state] ? " · live, newest first" : " · final, newest first");
+      }
+    }
+
+    function showTab(name, moveFocus) {
+      if (TABS.indexOf(name) < 0) { return; }
+      activeTab = name;
+      TABS.forEach(function (key) {
+        var btn = tabButtons[key];
+        var pane = tabPanes[key];
+        var on = key === name;
+        if (btn) {
+          btn.setAttribute("aria-selected", String(on));
+          btn.tabIndex = on ? 0 : -1;
+          if (on && moveFocus) { btn.focus(); }
+        }
+        if (pane) { pane.hidden = !on; }
+      });
+      paintRegionNote();
+    }
+
+    TABS.forEach(function (key) {
+      var btn = root.querySelector('.seg[data-tab="' + key + '"]');
+      tabButtons[key] = btn;
+      if (!btn) { return; }
+      btn.addEventListener("click", function () { showTab(key, false); });
+      btn.addEventListener("keydown", function (ev) {
+        var step = ev.key === "ArrowRight" ? 1 : (ev.key === "ArrowLeft" ? -1 : 0);
+        if (!step) { return; }
+        ev.preventDefault();
+        var at = TABS.indexOf(key);
+        showTab(TABS[(at + step + TABS.length) % TABS.length], true);
+      });
+    });
+
     function paintTree() {
       withFocusPreserved(svg, function () { renderTree(svg, state.run); });
+    }
+
+    /* The tree footer says what the canvas is — and, when the payload forced
+       the layout to infer a link, says that too, so a dashed edge is never
+       left unexplained. */
+    function paintTreeFoot() {
+      var node = f("tree-foot");
+      if (!node) { return; }
+      var audit = svg.__layout && svg.__layout.audit;
+      var base = "Every node is one Modal sandbox, attached to the sandbox that spawned it — " +
+        "failed and abandoned lines included.";
+      if (!audit || !audit.inferred) {
+        node.textContent = base +
+          " Select one for its reward config, its score history and its own timeline.";
+        return;
+      }
+      node.textContent = base + " " + plural(audit.inferred, "link") +
+        " here had to be inferred from the branch ids and are drawn dashed" +
+        (audit.placeholders
+          ? ", including " + pluralise(audit.placeholders, "sandbox", "sandboxes") +
+            " with no published branch record"
+          : "") + ".";
     }
 
     function paintTable() {
       withFocusPreserved(table, function () { renderTable(table, state.run); });
     }
 
+    /* Picking a sandbox anywhere — tree, table, activity chip — means "show me
+       this one", so it always brings the Sandbox pane forward. */
     function select(branchId, scroll) {
       state.selected = branchId;
+      showTab("sandbox", false);
       if (!state.run) { return; }
       paintTree();
       paintTable();
       renderDetail(detail, state.run);
       renderFeed(log, state.run);
+      paintRegionNote();
       if (scroll) { scrollNodeIntoView(treeScroll, branchId); }
     }
 
     svg.addEventListener("click", function (ev) {
       var node = ev.target.closest(".node");
-      if (node) { select(node.getAttribute("data-branch"), false); }
+      if (node && node.hasAttribute("data-branch")) {
+        select(node.getAttribute("data-branch"), false);
+      }
     });
     svg.addEventListener("keydown", function (ev) {
       if (ev.key !== "Enter" && ev.key !== " ") { return; }
@@ -3308,7 +3652,7 @@
         }
         if (state.run) {
           paintTable();
-          f("sort-note").textContent = "sorted by " + key.replace(/_/g, " ") + " " + state.sort.dir;
+          paintRegionNote();
         }
       });
     }
@@ -3350,8 +3694,19 @@
       f("started").textContent = "started " + fmtStamp(run.created_at);
       f("state-badge").innerHTML = statusBadge(run.state);
       f("elapsed").textContent = fmtDuration(run.elapsed_s);
-      f("best-score").textContent = run.best ? fmtScore(run.best.score) : "—";
       f("branch-count").textContent = String((run.branches || []).length);
+
+      /* The point of the product, so it is the biggest thing on the page. */
+      var objectiveName = (run.objective && run.objective.name) || "objective";
+      var scoreNode = f("best-score");
+      scoreNode.textContent = run.best ? fmtScore(run.best.score) : "—";
+      scoreNode.classList.toggle("is-unset", !run.best);
+      f("score-label").textContent = "Best " + objectiveName;
+      f("best-sub").textContent = run.best
+        ? "branch " + run.best.branch_id + " · " +
+          ((run.objective && run.objective.direction) || "maximize") +
+          " · scored by the evaluator, never by a reward"
+        : "no sandbox has cleared the evaluator yet";
 
       var budget = run.budget || {};
       var cap = Number(budget.usd || 0);
@@ -3392,8 +3747,8 @@
       paintTable();
       renderDetail(detail, run);
       renderFeed(log, run);
-      f("log-count").textContent = plural((run.events || []).length, "event") +
-        (live ? " · live" : " · final");
+      paintRegionNote();
+      paintTreeFoot();
       updateNav();
 
       /* First paint only: bring the selected branch into view rather than
