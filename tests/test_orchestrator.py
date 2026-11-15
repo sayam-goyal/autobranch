@@ -268,3 +268,29 @@ def test_branch_env_round_trips_through_env_vars(spec):
     assert again.snapshot_id == "im-123"
     assert again.spec["name"] == "gridworld"
     assert again.reward_config == {"weights": {"reached_goal": 1.0}}
+
+
+def test_a_past_tense_outcome_signal_is_rewarded_not_only_punished():
+    """`round_won` must open at +1, not match nothing.
+
+    "won" is not a substring of "win", so the SF3 bundle's baseline came out as
+    {round_lost: -1.0}: every term negative, nothing for winning. A policy
+    maximises that by stalling the clock, which is the opposite of the
+    objective -- and it would have burned the first iterations of a run with a
+    fixed deadline before the agent corrected it.
+    """
+    spec = EnvironmentSpec.parse({
+        "name": "sf3-ryu", "entrypoint": "m:f",
+        "signals": [
+            {"name": "round_won", "doc": "1 on the step a round is won"},
+            {"name": "round_lost", "doc": "1 on the step a round is lost"},
+            {"name": "damage_dealt", "doc": "health removed from the opponent"},
+        ],
+        "objective": {"name": "win_rate", "evaluator": "m:e"},
+        "policy": {"kind": "discrete", "n_actions": 40},
+    })
+    weights = initial_reward(spec)["weights"]
+    assert weights.get("round_won") == 1.0, weights
+    assert weights.get("round_lost") == -1.0, weights
+    # The baseline stays plain: shaping is the agent's job to discover.
+    assert "damage_dealt" not in weights, weights

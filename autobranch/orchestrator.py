@@ -278,7 +278,15 @@ def initial_reward(spec: EnvironmentSpec) -> dict[str, Any]:
     weights: dict[str, float] = {}
     for s in spec.signals:
         name = s.name
-        if any(k in name for k in ("win", "success", "goal", "reach", "score", "solved")):
+        # "won" is not a substring of "win". A signal named `round_won` matched
+        # nothing positive while `round_lost` matched the negative list, so the
+        # SF3 baseline opened as {round_lost: -1.0} -- a reward with no term for
+        # winning at all, which a policy maximises by stalling the clock rather
+        # than by fighting. The past tense belongs here for the same reason the
+        # present tense does.
+        if any(k in name for k in (
+            "win", "won", "success", "goal", "reach", "score", "solved", "victor",
+        )):
             weights[name] = 1.0
         elif any(k in name for k in ("lose", "lost", "fail", "death", "died", "lava", "crash")):
             weights[name] = -1.0
