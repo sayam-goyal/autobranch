@@ -136,6 +136,22 @@ class FullHyper:
     #: all of its wall clock in backward passes over correlated samples from
     #: the same few matches.
     train_subsample: int = 256
+    #: Hard wall-clock ceiling for one `train()` call, regardless of the step
+    #: target it was given.
+    #:
+    #: `branch_main._cap_steps` tries to do this by converting the deadline
+    #: into a step count, but it can only do that once it has measured a rate
+    #: -- which means from the *second* call. On the first call it falls back
+    #: to a pure step ceiling, and on an environment where a step costs ~0.15 s
+    #: of wall clock that ceiling was 194 minutes. One branch spent 112 minutes
+    #: of a 5-hour deadline inside its first tool call, never reaching an
+    #: evaluation, which is precisely what that function's docstring promises
+    #: will not happen.
+    #:
+    #: Steps are what a trainer counts; time is what a deadline is made of, and
+    #: only the trainer knows the exchange rate. So it enforces the bound
+    #: itself and returns what it has -- `steps` is a target, not a contract.
+    max_seconds: float = 1200.0
     #: Export every N iterations, and always before returning.
     #:
     #: This was 5, reasoning that an export is only *needed* when train()
@@ -633,6 +649,18 @@ def train(
 
     try:
         while progress["step"] < int(steps):
+            # Checked before collecting rather than after: a collection plus an
+            # update is ~12 minutes here, so testing at the bottom of the loop
+            # would overshoot the ceiling by a whole iteration.
+            if hyp.max_seconds and (time.time() - started) >= hyp.max_seconds:
+                print(
+                    f"stopping at {progress['step']:,}/{int(steps):,} steps: this call has "
+                    f"used {(time.time() - started) / 60:.0f} min of its "
+                    f"{hyp.max_seconds / 60:.0f} min ceiling. `steps` is a target, and a "
+                    f"branch that never returns never evaluates.",
+                    flush=True,
+                )
+                break
             iteration = progress["iteration"] + 1
             decisions: list[Decision] = []
             totals = {"decisions": 0, "invalid": 0, "damage_dealt": 0.0,
