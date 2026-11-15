@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>autobranch</title>
+<meta name="description" content="autobranch — a generalized RL framework on Modal. Hand it an environment and a sentence of intent; it searches the reward-function space and hands back trained weights." />
+<meta name="color-scheme" content="light dark" />
+<!-- The ASGI app serves exactly three assets; declaring an empty icon keeps the
+     browser from asking for a /favicon.ico that is not there. -->
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<a class="skip-link" href="#view">Skip to content</a>
+
+<header class="topbar">
+  <a class="brand" href="#/runs">
+    <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M4 14V5a3 3 0 0 1 3-3h5" />
+      <path d="M4 9h3a3 3 0 0 1 3 3v2" />
+      <circle cx="4" cy="14" r="1.6" />
+      <circle cx="12" cy="2" r="1.6" />
+      <circle cx="10" cy="14" r="1.6" />
+    </svg>
+    <span class="brand-word">autobranch</span>
+  </a>
+
+  <nav class="topnav" aria-label="Sections">
+    <a href="#/runs" data-nav="runs">Training runs</a>
+    <a href="#/new" data-nav="new">New run</a>
+    <span class="nav-sep mono" id="nav-sep" aria-hidden="true" hidden>/</span>
+    <a href="#/runs" data-nav="run" hidden>Run</a>
+    <a href="#/runs" data-nav="artifact" hidden>Artifact</a>
+  </nav>
+
+  <div class="topbar-right">
+    <span class="badge badge-mock" id="mock-badge" hidden title="No backend reachable — the page is rendering a built-in fixture.">Mock data</span>
+    <button class="btn btn-ghost btn-sm" type="button" id="theme-toggle" aria-live="polite">Theme: system</button>
+  </div>
+</header>
+
+<main id="view" class="view" tabindex="-1">
+  <p class="loading mono">Loading…</p>
+</main>
+
+<footer class="footer">
+  <span class="mono">autobranch</span>
+  <span class="sep" aria-hidden="true">/</span>
+  <span>Rewards are a means. The objective is the measurement.</span>
+  <span class="sep" aria-hidden="true">/</span>
+  <span class="mono" id="api-origin">api: same-origin</span>
+</footer>
+
+
+<!-- ───────────────────────────── training runs ─────────────────────────────
+     The landing page. One scan should answer three questions: which runs are
+     live, which ones won, and what they cost. So: a four-number summary strip,
+     then one table with no card around it — hairlines only.
+     ------------------------------------------------------------------------ -->
+<template id="tpl-runs">
+  <section class="page page-runs">
+    <div class="page-head">
+      <p class="eyebrow">Training runs</p>
+      <h1>Everything you have submitted.</h1>
+      <p class="lede">
+        One row per run. A run owns a tree of Modal sandboxes, each training a different
+        reward config against the same untouchable objective. Open a row to watch its tree.
+      </p>
+    </div>
+
+    <div class="summary">
+      <dl class="stats">
+        <div class="stat">
+          <dt>Runs</dt>
+          <dd class="mono num" data-f="total">—</dd>
+        </div>
+        <div class="stat">
+          <dt>Live now</dt>
+          <dd class="mono num" data-f="live">—</dd>
+        </div>
+        <div class="stat">
+          <dt>Best objective</dt>
+          <dd class="mono num accent" data-f="best">—</dd>
+        </div>
+        <div class="stat">
+          <dt>Total spend</dt>
+          <dd class="mono num" data-f="spend">—</dd>
+        </div>
+      </dl>
+
+      <div class="summary-actions">
+        <span class="region-note mono" data-f="poll-note" aria-live="polite"></span>
+        <a class="btn btn-primary btn-sm" href="#/new">New run</a>
+      </div>
+    </div>
+
+    <section class="region region-flat">
+      <div class="region-head">
+        <p class="eyebrow">Runs</p>
+        <span class="region-note mono" data-f="sort-note">newest first</span>
+      </div>
+      <div class="table-scroll">
+        <table class="table table-runs" data-f="runs-table">
+          <thead>
+            <tr>
+              <th scope="col"><button class="th-sort" type="button" data-sort="run_id">Run</button></th>
+              <th scope="col"><button class="th-sort" type="button" data-sort="env_name">Environment / objective</button></th>
+              <th scope="col"><button class="th-sort" type="button" data-sort="state">State</button></th>
+              <th scope="col" class="num"><button class="th-sort" type="button" data-sort="best_score">Best</button></th>
+              <th scope="col"><button class="th-sort" type="button" data-sort="branches">Sandboxes</button></th>
+              <th scope="col" class="num"><button class="th-sort" type="button" data-sort="spend_usd">Spend</button></th>
+              <th scope="col" class="num"><button class="th-sort" type="button" data-sort="created_at">Age</button></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="region-foot" data-f="foot">
+        Sandbox counts are filled in one run per refresh cycle, so the list never stampedes
+        the API. A run whose tree has not been read yet shows a dash.
+      </p>
+    </section>
+  </section>
+</template>
+
+
+<!-- ───────────────────────────── new run ───────────────────────────── -->
+<template id="tpl-new">
+  <section class="page page-new">
+    <div class="page-head">
+      <p class="eyebrow">New run</p>
+      <h1>Hand it an environment and a sentence of intent.</h1>
+      <p class="lede">
+        autobranch reads your bundle's manifest, writes a reward config, trains it, and scores it
+        with the evaluator you declared — which no agent can touch. Promising branches fork like
+        git worktrees; lines that stop paying abandon themselves.
+      </p>
+    </div>
+
+    <form class="form" id="new-run-form" novalidate>
+      <fieldset class="block">
+        <legend class="eyebrow">Environment bundle</legend>
+        <p class="hint">
+          A directory, zip, or git URL containing <code class="mono">autobranch.yaml</code> plus code.
+          Pick one source — the two are mutually exclusive.
+        </p>
+
+        <div class="segmented" role="tablist" aria-label="Bundle source">
+          <button class="seg" type="button" role="tab" id="tab-zip" data-source="zip" aria-selected="true" aria-controls="pane-zip">Upload .zip</button>
+          <button class="seg" type="button" role="tab" id="tab-git" data-source="git" aria-selected="false" aria-controls="pane-git">Git URL</button>
+        </div>
+
+        <div class="source-pane" id="pane-zip" role="tabpanel" aria-labelledby="tab-zip">
+          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-describedby="dropzone-hint">
+            <svg class="dropzone-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 16V4" />
+              <path d="M7.5 8.5 12 4l4.5 4.5" />
+              <path d="M4 16v3h16v-3" />
+            </svg>
+            <p class="dropzone-label mono">Drop a <strong>.zip</strong> bundle, or click to browse</p>
+            <p class="dropzone-hint" id="dropzone-hint">Everything after the handoff runs on Modal. Nothing runs locally.</p>
+            <input class="visually-hidden" type="file" id="bundle-file" name="bundle" accept=".zip,application/zip" />
+          </div>
+          <p class="file-chip mono" id="file-chip" hidden>
+            <span id="file-name">—</span>
+            <span class="file-bytes" id="file-bytes"></span>
+            <button class="btn-x" type="button" id="file-clear" aria-label="Remove selected file">×</button>
+          </p>
+        </div>
+
+        <div class="source-pane" id="pane-git" role="tabpanel" aria-labelledby="tab-git" hidden>
+          <label class="label" for="bundle-url">Git URL</label>
+          <input class="field mono" type="url" id="bundle-url" name="bundle_url" placeholder="https://github.com/your-org/street-fighter-iii-env.git#main" autocomplete="off" spellcheck="false" />
+          <p class="hint">Cloned inside the sandbox at submission. A tag or <code class="mono">#ref</code> pins the build.</p>
+        </div>
+
+        <p class="field-problem mono" data-problem="bundle" role="alert" hidden></p>
+      </fieldset>
+
+      <!-- ── the parse preview: what the system understood ── -->
+      <section class="block preflight">
+        <div class="block-head">
+          <p class="eyebrow">What the system understood</p>
+          <span class="badge" data-f="pf-state" hidden></span>
+        </div>
+        <p class="hint">
+          The manifest is parsed in the browser before anything is submitted, so you can read the
+          contract the way the agents will: the signals they may compose a reward from, the
+          objective they may never touch, and the hardware the run will ask Modal for. The server
+          re-validates the same bundle on submit and its answer wins.
+        </p>
+
+        <div class="pf-placeholder" data-f="pf-placeholder">
+          <p class="mono">No manifest parsed yet.</p>
+          <p class="hint">
+            Drop a <code class="mono">.zip</code> above, or
+            <button class="btn-link" type="button" data-f="pf-example">preview the gridworld reference manifest</button>.
+            A git URL is resolved server-side, so it is parsed at submit instead.
+          </p>
+        </div>
+
+        <div class="pf-body" data-f="pf-body" hidden></div>
+      </section>
+
+      <fieldset class="block">
+        <legend class="eyebrow">Constraints</legend>
+        <p class="hint">Free text. The master agent parses these before it writes the first reward config — they bound the search, the hardware, and the spend.</p>
+        <label class="label visually-hidden" for="constraints">Constraints</label>
+        <textarea class="field textarea mono" id="constraints" name="constraints" rows="8" spellcheck="false" placeholder="must posttrain Qwen/Qwen3-4B
+stay under $50
+must beat 76% win rate vs the level-8 CPU
+no GPU larger than an L40S"></textarea>
+        <p class="field-problem mono" data-problem="constraints" role="alert" hidden></p>
+      </fieldset>
+
+      <fieldset class="block">
+        <legend class="eyebrow">Budget caps</legend>
+        <p class="hint">Hard ceilings, decremented centrally. A branch that exhausts its share is abandoned whether or not its agent agrees.</p>
+        <div class="grid-3">
+          <div class="field-row">
+            <label class="label" for="budget-usd">Max spend (USD)</label>
+            <input class="field mono" type="number" id="budget-usd" name="usd" min="1" max="100000" step="1" value="50" inputmode="numeric" />
+          </div>
+          <div class="field-row">
+            <label class="label" for="budget-hours">Max wall clock (hours)</label>
+            <input class="field mono" type="number" id="budget-hours" name="hours" min="0.25" max="336" step="0.25" value="6" inputmode="decimal" />
+          </div>
+          <div class="field-row">
+            <label class="label" for="budget-branches">Max concurrent branches</label>
+            <input class="field mono" type="number" id="budget-branches" name="max_branches" min="1" max="64" step="1" value="8" inputmode="numeric" />
+          </div>
+        </div>
+        <p class="field-problem mono" data-problem="budget" role="alert" hidden></p>
+      </fieldset>
+
+      <div class="problems" data-f="problems" role="alert" hidden>
+        <p class="problems-head mono" data-f="problems-head">—</p>
+        <ol class="problems-list" data-f="problems-list"></ol>
+      </div>
+
+      <div class="form-foot">
+        <button class="btn btn-primary" type="submit" id="submit-run">Start run</button>
+        <p class="form-note mono" data-f="submit-note">The bundle is validated before a single container is created.</p>
+      </div>
+    </form>
+  </section>
+</template>
+
+
+<!-- ───────────────────────────── run ─────────────────────────────
+     One organising idea: a single column of three regions.
+
+       1. identity + the one number that matters (best objective, set large),
+       2. the sandbox tree,
+       3. ONE switchable region underneath — the selected sandbox, the full
+          table, or the run's activity — never more than one at a time.
+
+     The old layout stacked a detail panel, a table and a feed permanently
+     beside and below the tree; that is what made the page feel crowded and
+     what left a column of dead space under a short tree.
+     ------------------------------------------------------------------------ -->
+<template id="tpl-run">
+  <section class="page page-run">
+    <header class="run-head">
+      <div class="run-head-top">
+        <div class="run-ident">
+          <p class="eyebrow">Run</p>
+          <h1 class="mono" data-f="run_id">—</h1>
+          <p class="run-sub">
+            <span data-f="env_name">—</span>
+            <span class="sep" aria-hidden="true">/</span>
+            <span class="mono" data-f="objective">—</span>
+            <span class="dir-chip mono" data-f="direction"></span>
+            <span class="sep" aria-hidden="true">/</span>
+            <span class="mono" data-f="started">—</span>
+          </p>
+        </div>
+        <div class="run-actions">
+          <a class="btn btn-primary btn-sm" data-f="artifact-link" href="#/runs">Artifact</a>
+          <button class="btn btn-sm" type="button" data-f="stop">Stop run</button>
+        </div>
+      </div>
+
+      <div class="run-head-main">
+        <div class="hero-metric">
+          <p class="eyebrow" data-f="score-label">Best objective</p>
+          <p class="score-big mono num" data-f="best-score">—</p>
+          <p class="hero-sub mono" data-f="best-sub">—</p>
+        </div>
+
+        <dl class="stats">
+          <div class="stat">
+            <dt>State</dt>
+            <dd data-f="state-badge"></dd>
+          </div>
+          <div class="stat">
+            <dt>Elapsed</dt>
+            <dd class="mono num" data-f="elapsed">—</dd>
+          </div>
+          <div class="stat">
+            <dt>Sandboxes</dt>
+            <dd class="mono num" data-f="branch-count">—</dd>
+          </div>
+        </dl>
+
+        <div class="spend">
+          <div class="spend-head">
+            <span class="label">Spend against cap</span>
+            <span class="mono num" data-f="spend-text">—</span>
+          </div>
+          <div class="meter" data-f="meter" role="progressbar" aria-label="Spend against cap" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="meter-fill" data-f="meter-fill"></div>
+          </div>
+          <p class="spend-foot mono" data-f="budget-foot">—</p>
+        </div>
+      </div>
+    </header>
+
+    <section class="region region-tree">
+      <div class="region-head">
+        <p class="eyebrow">Sandbox tree</p>
+        <!-- One row of counts, which doubles as the colour legend: a separate
+             legend listing statuses that are not in this run is pure noise. -->
+        <ul class="status-chips" data-f="status-chips" aria-label="Sandboxes by status"></ul>
+      </div>
+      <div class="tree-scroll" data-f="tree-scroll" tabindex="0" role="group" aria-label="Sandbox tree — select a sandbox for its detail">
+        <svg class="tree-svg" data-f="tree-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+      <p class="region-foot" data-f="tree-foot">
+        Every node is one Modal sandbox, and every node is attached to the one that spawned it —
+        failed and abandoned lines included. A dashed edge means the link was inferred from the
+        branch id rather than recorded.
+      </p>
+    </section>
+
+    <section class="region region-lower">
+      <div class="region-head">
+        <div class="segmented" role="tablist" aria-label="Run detail">
+          <button class="seg" type="button" role="tab" id="tab-sandbox" data-tab="sandbox" aria-selected="true" aria-controls="pane-sandbox">Sandbox</button>
+          <button class="seg" type="button" role="tab" id="tab-all" data-tab="all" aria-selected="false" aria-controls="pane-all" tabindex="-1">All sandboxes</button>
+          <button class="seg" type="button" role="tab" id="tab-activity" data-tab="activity" aria-selected="false" aria-controls="pane-activity" tabindex="-1">Activity</button>
+        </div>
+        <span class="region-note mono" data-f="region-note"></span>
+      </div>
+
+      <div class="pane" id="pane-sandbox" role="tabpanel" aria-labelledby="tab-sandbox" data-f="detail" tabindex="0">
+        <p class="empty mono">Select a sandbox in the tree.</p>
+      </div>
+
+      <div class="pane" id="pane-all" role="tabpanel" aria-labelledby="tab-all" hidden>
+        <div class="table-scroll">
+          <table class="table table-dense" data-f="branch-table">
+            <thead>
+              <tr>
+                <th scope="col"><button class="th-sort" type="button" data-sort="branch_id">Branch</button></th>
+                <th scope="col"><button class="th-sort" type="button" data-sort="sandbox">Sandbox</button></th>
+                <th scope="col" class="num"><button class="th-sort" type="button" data-sort="depth">Depth</button></th>
+                <th scope="col"><button class="th-sort" type="button" data-sort="status">Status</button></th>
+                <th scope="col" class="num"><button class="th-sort" type="button" data-sort="score">Objective</button></th>
+                <th scope="col" class="num"><button class="th-sort" type="button" data-sort="spend_usd">Spend</button></th>
+                <th scope="col" class="num"><button class="th-sort" type="button" data-sort="tokens">Tokens</button></th>
+                <th scope="col" class="cell-wide">Doing now</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="pane" id="pane-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
+        <ol class="feed" data-f="log" tabindex="0" aria-label="Run activity, newest first"></ol>
+      </div>
+    </section>
+  </section>
+</template>
+
+
+<!-- ───────────────────────────── artifact ───────────────────────────── -->
+<template id="tpl-artifact">
+  <section class="page page-artifact">
+    <div class="page-head">
+      <p class="eyebrow">Artifact</p>
+      <h1 class="mono" data-f="run_id">—</h1>
+    </div>
+
+    <section class="hero">
+      <div class="hero-metric">
+        <p class="eyebrow" data-f="objective-label">Objective</p>
+        <p class="score-big mono num" data-f="score">—</p>
+        <p class="hero-sub mono" data-f="score-meta">—</p>
+      </div>
+      <dl class="kv">
+        <div><dt>Winning branch</dt><dd class="mono" data-f="branch">—</dd></div>
+        <div><dt>Environment</dt><dd class="mono" data-f="env">—</dd></div>
+        <div><dt>Total spend</dt><dd class="mono num" data-f="spend">—</dd></div>
+        <div><dt>Sandboxes explored</dt><dd class="mono num" data-f="explored">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="block" data-f="lineage-block" hidden>
+      <p class="eyebrow">Reward lineage</p>
+      <p class="hint">Root to winner. Each step is one mutation and the objective score it bought.</p>
+      <ol class="lineage" data-f="lineage"></ol>
+    </section>
+
+    <section class="block">
+      <p class="eyebrow">Download</p>
+      <ul class="files" data-f="files"></ul>
+    </section>
+
+    <section class="block">
+      <p class="eyebrow">Run it</p>
+      <p class="hint">Serves the winning branch's checkpoint from the artifacts volume.</p>
+      <div class="snippet">
+        <pre class="mono" data-f="run-command">—</pre>
+        <button class="btn btn-sm btn-copy" type="button" data-f="copy">Copy</button>
+      </div>
+    </section>
+
+    <p class="back"><a data-f="back" href="#/runs">← Back to the run</a></p>
+  </section>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>
