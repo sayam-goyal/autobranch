@@ -376,7 +376,7 @@ def collect_group(env, policy: VisionActionPolicy, compiled, hyper: FullHyper,
     live = np.ones(lanes, dtype=bool)
     per_lane: list[list[Decision]] = [[] for _ in range(lanes)]
     totals = {"decisions": 0, "invalid": 0, "damage_dealt": 0.0, "damage_taken": 0.0,
-              "rounds_won": 0, "rounds_lost": 0}
+              "rounds_won": 0, "rounds_lost": 0, "lanes": lanes, "lanes_done": 0}
 
     for _ in range(hyper.max_decisions_per_match):
         if not live.any():
@@ -424,6 +424,15 @@ def collect_group(env, policy: VisionActionPolicy, compiled, hyper: FullHyper,
 
         obs = result.obs
         live &= ~result.done
+
+    # How many lanes reached a natural end rather than being cut off by the
+    # decision cap. Without this the cap is invisible: `shaping_only` only
+    # fires when *no* round resolves anywhere, so a collection where every
+    # single match is truncated but a few rounds happen to land reads as
+    # healthy. This run spent 11 iterations in exactly that state -- 4,800
+    # decisions every time, which is 8 lanes x 600 exactly, meaning not one
+    # match in 88 ever finished -- and the metrics said nothing.
+    totals["lanes_done"] = int((~live).sum())
 
     decisions: list[Decision] = []
     for lane in per_lane:
@@ -735,7 +744,8 @@ def train(
             iteration = progress["iteration"] + 1
             decisions: list[Decision] = []
             totals = {"decisions": 0, "invalid": 0, "damage_dealt": 0.0,
-                      "damage_taken": 0.0, "rounds_won": 0, "rounds_lost": 0}
+                      "damage_taken": 0.0, "rounds_won": 0, "rounds_lost": 0,
+                      "lanes": 0, "lanes_done": 0}
             for g in range(max(1, hyp.groups_per_iteration)):
                 got, tot = collect_group(
                     environment, policy, compiled, hyp,
@@ -765,6 +775,23 @@ def train(
                     f"({hyp.max_decisions_per_match} per lane). round_won/round_lost "
                     f"contributed nothing, so this update is shaping-only. Raise "
                     f"max_decisions_per_match above one round's length.",
+                    flush=True,
+                )
+            elif totals["lanes"] and totals["lanes_done"] == 0:
+                # Every match hit the cap. Rounds still resolve, so the
+                # shaping-only warning above stays silent and the iteration
+                # looks fine -- but no match ever reaches an outcome, so the
+                # policy is trained on prefixes of matches and scored on whole
+                # ones. That gap is how a collection winning 73 of 76 rounds
+                # coexists with a 0.54 win rate at evaluation.
+                print(
+                    f"WARNING: iteration {iteration} truncated every one of "
+                    f"{totals['lanes']} matches at "
+                    f"{hyp.max_decisions_per_match} decisions; "
+                    f"{totals['rounds_won'] + totals['rounds_lost']} rounds "
+                    f"resolved ({(totals['rounds_won'] + totals['rounds_lost']) / totals['lanes']:.2f} "
+                    f"per match). Training sees match prefixes while the "
+                    f"objective scores complete matches.",
                     flush=True,
                 )
 
@@ -821,6 +848,18 @@ def train(
                 "shaping_only": bool(totals["rounds_won"] == 0
                                      and totals["rounds_lost"] == 0),
                 "rounds_lost": totals["rounds_lost"],
+                # What fraction of matches reached an outcome instead of being
+                # cut off by the decision cap, and how many rounds a match
+                # yielded. `shaping_only` is too blunt to show this: it needs
+                # *zero* rounds anywhere, so a collection where every match is
+                # truncated reads as healthy as long as a few rounds land.
+                # These two make the cap legible in the log an analysis reads.
+                "matches": totals["lanes"],
+                "matches_completed": totals["lanes_done"],
+                "match_completion_rate": (totals["lanes_done"]
+                                          / max(1, totals["lanes"])),
+                "rounds_per_match": ((totals["rounds_won"] + totals["rounds_lost"])
+                                     / max(1, totals["lanes"])),
                 "reward_fingerprint": fingerprint,
                 "wall_seconds": round(time.time() - started, 1),
                 **{k: v for k, v in stats.items()},
