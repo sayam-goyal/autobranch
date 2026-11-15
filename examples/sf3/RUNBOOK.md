@@ -102,7 +102,26 @@ Registry state (tree, reward configs, scores, events, spend) lives in
    worker.
 4. **Spend approaching the cap** — the cap is enforced centrally, not advised.
    Branches abandon when their share is exhausted whether or not the agent
-   agrees.
+   agrees. **Two caveats, measured on this run.**
+
+   *The UI under-reports during a long call.* `record_compute` fires when a
+   train call **returns**, so GPU time is billed in lumps. During a ~50 minute
+   train call the run shows stale spend -- it read `$0.01` 22 minutes into this
+   one, which was the agent's LLM tokens alone and nothing else. That is the
+   same symptom reported on the Rocket League run, from a different cause, so
+   it is worth not mistaking one for the other.
+
+   *The cap is only checked between agent turns.* `SearchPolicy` evaluates the
+   budget while the agent is deciding, so a single long call can overrun it.
+   Harmless here and not harmless in general -- see the rates below.
+
+   | | |
+   |---|---|
+   | H100 + 8 CPU + 64 GiB | **$4.84/hr** |
+   | one ~750 s iteration | $1.01 |
+   | 8 emulator lanes | $1.01/hr |
+   | 24 lanes (evaluation) | $3.03/hr |
+   | **projected over 4.25 h** | **≈$25** against the $220 cap |
 
 ## The comparison this run exists to make
 
