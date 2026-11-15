@@ -852,12 +852,12 @@ def trainer_for(spec: EnvironmentSpec) -> TrainFn:
     if kind == "ppo":
         return train
     if kind == "grpo_lora":
-        raise NotImplementedError(
-            "trainer 'grpo_lora' (LoRA post-training of a base model with GRPO) arrives in "
-            "phase P3, where a real non-toy environment and a Hugging Face base model land "
-            "together; see DESIGN.md section 8. Use trainer: ppo until then, or point "
-            "trainer: custom:module:fn at your own implementation."
-        )
+        # Imported here rather than at module scope on purpose: `posttrain`
+        # needs torch, transformers and peft, none of which are in the base
+        # image, and a bundle training with `ppo` must not pay for them.
+        from autobranch import posttrain
+
+        return posttrain.train
     if kind.startswith("custom:"):
         target = kind[len("custom:"):]
         fn = import_target(target)

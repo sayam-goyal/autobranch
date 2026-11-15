@@ -1,0 +1,120 @@
+# The post-training bundle. A four-letter word is revealed one guess at a
+# time over a ten-letter alphabet, so an action is a single symbol -- the shape
+# a language-model policy can be restricted to exactly (one token per action,
+# logits masked to the action vocabulary), which is why this is the bundle the
+# `grpo_lora` trainer is demonstrated on.
+#
+# It is CPU-runnable and fast on its own: the environment is pure NumPy and
+# nothing here needs a GPU until a base model is attached.
+name: wordguess
+version: 1
+description: >
+  Guess a hidden four-letter word one letter at a time from a ten-letter
+  alphabet. Reward design decides the outcome: letter_correct pays for every
+  guess of an in-word letter including repeats, so a reward built from it
+  alone is maximised by re-guessing one good letter forever and solves
+  nothing. letter_new, or a penalty on repeat_guess, is the way out.
+
+image:
+  base: debian_slim
+  python: "3.11"
+  # The environment itself needs only numpy. The rest is what the `grpo_lora`
+  # trainer needs, and it is declared here rather than assumed: none of torch,
+  # transformers, peft or huggingface_hub is in the framework's base image, so
+  # a bundle that wants LoRA post-training has to ask for them. A constraint
+  # like "must posttrain Qwen/Qwen3-4B" flips `trainer:` below from ppo to
+  # grpo_lora (see spec.with_base_model), and a manifest that had not declared
+  # these would fail at the first import with a message naming this key.
+  pip:
+    - numpy>=1.26
+    - pyyaml>=6.0
+    - torch>=2.2
+    - transformers>=4.44
+    - peft>=0.11
+    - huggingface_hub>=0.23
+    - accelerate>=0.30
+
+entrypoint: word_env:make_env
+
+# No GPU by default: PPO on this environment is a CPU job, and so is a
+# small-model smoke test. A run that attaches a real base model should raise
+# this -- `grpo_lora` honours whatever the manifest asks for, it does not
+# silently upgrade the machine.
+resources:
+  gpu: null
+  cpu: 2
+  memory: 4096
+
+# Facts about a transition. No rewards, no opinions. Every one is a per-lane
+# array of shape [n_envs]; the declared ranges are what validate_env checks
+# against, so they are honest rather than aspirational.
+signals:
+  - name: letter_correct
+    type: bool
+    range: [0, 1]
+    doc: >
+      1 if the guessed letter occurs in the hidden word -- including when that
+      letter was already guessed and its positions are already revealed. It
+      reports the guess, not the progress: a reward built from this alone is
+      maximised by re-guessing one known-good letter forever, which never
+      solves a word. Use letter_new if you want progress.
+  - name: letter_new
+    type: bool
+    range: [0, 1]
+    doc: >
+      1 only when the guess reveals at least one position that was still
+      hidden. This is the honest progress signal; it can fire at most four
+      times per episode.
+  - name: letter_wrong
+    type: bool
+    range: [0, 1]
+    doc: "1 if the guessed letter does not occur in the hidden word. Exactly 1 - letter_correct."
+  - name: repeat_guess
+    type: bool
+    range: [0, 1]
+    doc: >
+      1 if this letter had already been guessed earlier in the episode. Costs
+      a step and reveals nothing; give it a negative weight to stop a policy
+      from standing still.
+  - name: word_solved
+    type: bool
+    range: [0, 1]
+    doc: >
+      1 on the step that reveals the last hidden position, which also ends the
+      episode. This is the success condition the objective measures.
+  - name: guess_cost
+    type: float
+    range: [0, 1]
+    doc: "Always 1.0, one per guess. Give it a negative weight to pay for time."
+  - name: revealed_fraction
+    type: float
+    range: [0, 1]
+    doc: >
+      Fraction of the four positions revealed after this guess. Monotone
+      within an episode, so it is the natural signal for potential shaping.
+
+# The measurement. Agents may never modify this block, and the evaluator
+# imports no reward code, no trainer and no post-training code.
+objective:
+  name: solve_rate
+  direction: maximize
+  evaluator: word_env:evaluate
+  budget:
+    episodes: 128
+    lanes: 16
+    max_steps: 12
+
+# One action per letter of ALPHABET ("aceilnorst"), which is also the size of
+# the action vocabulary the LoRA policy samples from. obs_dim = 10 guessed
+# flags + 10 known-present flags + 4 revealed flags + revealed_fraction
+# + budget_left = 26.
+policy:
+  kind: discrete
+  n_actions: 10
+  obs_dim: 26
+
+# Left as ppo so the bundle trains end to end with no base model and no GPU.
+# A "must posttrain <repo-id>" constraint rewrites this to grpo_lora and sets
+# policy.base_model; that is the whole switch, and it is the path
+# autobranch/posttrain.py implements.
+trainer: ppo

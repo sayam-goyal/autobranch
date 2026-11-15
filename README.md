@@ -143,6 +143,38 @@ are extracted:
 | `nothing bigger than an L40S` | GPU ceiling |
 | `stay under $50` | hard spend cap, enforced not advised |
 
+## Post-training a base model
+
+`must posttrain Qwen/Qwen3-4B` switches the trainer to `grpo_lora`: LoRA
+adapters over a base model, critic-free, with group-relative advantages.
+
+**An action is a masked token, never parsed text.** One forward pass, logits at
+the last position, restricted to one token per action index, then sampled. The
+sampled index *is* the action, so an illegal action is unrepresentable and no
+"invalid move" penalty has to exist -- a penalty that would otherwise compete
+with the reward terms an agent is actually searching over.
+
+**No critic.** For one state, sample `G` completions and use
+`(r - mean) / (std + eps)` within the group. The honest cost is a group where
+every sample scores identically, so `zero_variance_group_fraction` is in every
+metrics line: a run whose groups are mostly degenerate is not learning slowly,
+it is not learning.
+
+Weights land on the Volume once, under `models/<escaped-repo-id>/`. The
+download goes to a staging directory and is moved into place with `os.replace`
+only after a completion marker is written *inside* it, so a half-finished
+download can never be mistaken for a usable model and two branches racing on
+the same repo cannot interleave into one corrupt tree.
+
+Scoring a LoRA policy goes through the same `objective.load_checkpoint_policy`
+as a PPO one, dispatched on the checkpoint's own `arch.kind`. That needs the
+inference half of post-training to be reachable from the measurement path,
+which is why it lives in `lm_policy.py` and imports no reward code -- the
+import-graph test walks `objective`'s closure and would fail on `posttrain`.
+A downloaded artifact rebuilds its adapter from the checkpoint record alone,
+because the `adapter/` directory stayed behind in a sandbox that no longer
+exists.
+
 ## Modal services
 
 | service | role |
@@ -166,13 +198,16 @@ autobranch/
   branch_main.py    what runs inside a branch sandbox
   forking.py        snapshot, fork, rollback
   trainer.py        PPO, driven by the spec
+  posttrain.py      grpo_lora: LoRA post-training, critic-free
+  lm_policy.py      running a post-trained policy -- imports no reward code
   objective.py      the immutable measurement
   registry.py       run/branch state, one key per writer
   ledger.py         spend, per-writer shards
   consolidate.py    the artifact
   server.py         the API and frontend, one origin
 frontend/           vanilla HTML/CSS/JS, no build step
-examples/gridworld/ the reference environment
+examples/gridworld/ the reference environment (ppo)
+examples/wordguess/ the reference environment for post-training
 ```
 
 ## Running it
@@ -184,7 +219,7 @@ modal run app.py::cli_validate  --bundle examples/gridworld
 modal run app.py::cli_submit    --bundle examples/gridworld --usd 8 --hours 1
 modal run app.py::cli_status    --run-id run-xxxx
 modal run app.py::cli_finalize  --run-id run-xxxx   # build the artifact
-python3 -m pytest tests/ -q                        # 315 tests
+python3 -m pytest tests/ -q                        # 413 tests
 ```
 
 ## Notes from building it
