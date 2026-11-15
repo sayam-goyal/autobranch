@@ -3872,8 +3872,14 @@
       var files = art.files || [];
       f("files").innerHTML = files.map(function (file) {
         var note = file.desc || FILE_NOTES[file.name] || "artifact file";
+        // The basename, not file.name: the download route matches by basename
+        // on purpose, so the artifact tree is enumerated and compared rather
+        // than a path being joined from a request. Sending "weights/policy.pt"
+        // encodes the slash and matches no route at all, which 404s the
+        // weights -- the one file the whole run exists to produce.
+        var leaf = String(file.name).split("/").pop();
         var href = file.url ||
-          ("/api/runs/" + encodeURIComponent(runId) + "/artifact/" + encodeURIComponent(file.name));
+          ("/api/runs/" + encodeURIComponent(runId) + "/artifact/" + encodeURIComponent(leaf));
         return "<li>" +
           '<span class="file-main">' +
           '<span class="file-title">' + esc(file.name) + "</span>" +
