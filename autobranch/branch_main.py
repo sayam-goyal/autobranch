@@ -513,12 +513,20 @@ class BranchRunner:
 
         child_id = child_branch_id(self.env.branch_id, self.state.children)
         self._activity(f"forking {child_id}")
-        info = self.forker(
-            parent_env=self.env,
-            child_branch_id=child_id,
-            reward_config=cfg,
-            note=str(args.get("note") or getattr(action, "rationale", "") or ""),
-        )
+        try:
+            info = self.forker(
+                parent_env=self.env,
+                child_branch_id=child_id,
+                reward_config=cfg,
+                note=str(args.get("note") or getattr(action, "rationale", "") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Recoverable by design: the branch keeps its own line and may
+            # retry, pick a different mutation, or carry on training.
+            raise ToolError(
+                f"the fork could not be created ({type(exc).__name__}: {exc}); "
+                "your own branch is unaffected and you may continue or try again"
+            ) from None
         self.state.children += 1
         if info.get("snapshot_id"):
             self.state.snapshots.append(
@@ -552,10 +560,16 @@ class BranchRunner:
 
         if self.forker is None:
             raise ToolError("rollback is unavailable in this run configuration")
-        self.forker(
-            parent_env=self.env, child_branch_id=None, reward_config=None,
-            note="rollback", rollback_to=target,
-        )
+        try:
+            self.forker(
+                parent_env=self.env, child_branch_id=None, reward_config=None,
+                note="rollback", rollback_to=target,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ToolError(
+                f"the rollback failed ({type(exc).__name__}: {exc}); your weights are "
+                "unchanged, so continue from where you are or try a different snapshot"
+            ) from None
         self._event(f"rolled back to snapshot {target}", "warn")
         return {"ok": True, "snapshot_id": target,
                 "note": "weights and optimizer are restored; your score history is unchanged"}

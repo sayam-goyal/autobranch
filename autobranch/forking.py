@@ -90,19 +90,36 @@ def make_forker(*, spec, budget, registry=None, app=None, image=None, launcher=N
 def _rollback_self(snapshot_id: str) -> dict[str, Any]:
     """Re-mount an earlier snapshot of our own workspace.
 
-    The unmount is best effort: a root branch's `/workspace` is plain sandbox
-    filesystem with nothing mounted, and Modal errors on unmounting that. The
-    subsequent mount shadows the directory either way.
+    Unmount-then-mount is verified to work on Modal, so a failure here means
+    something specific went wrong and is worth reporting rather than hiding.
+    The previous version swallowed the unmount error and then attempted a mount
+    that could only fail with `path already has a mount` -- which killed a live
+    branch that was otherwise healthy.
+
+    A root branch has nothing mounted at `/workspace` (it is plain sandbox
+    filesystem) and Modal errors on unmounting that, so "nothing to unmount" is
+    expected and distinguished from a real failure.
     """
     import modal
 
     sb = self_sandbox()
     workspace = os.environ.get("AUTOBRANCH_WORKSPACE", "/workspace")
+
+    unmount_error = None
     try:
         sb.unmount_image(workspace)
-    except Exception:  # noqa: BLE001 - nothing mounted is the common case
-        pass
-    sb.mount_image(workspace, modal.Image.from_id(snapshot_id))
+    except Exception as exc:  # noqa: BLE001
+        unmount_error = exc
+
+    try:
+        sb.mount_image(workspace, modal.Image.from_id(snapshot_id))
+    except Exception as exc:  # noqa: BLE001
+        raise ForkError(
+            f"could not mount snapshot {snapshot_id} at {workspace}: "
+            f"{type(exc).__name__}: {exc}"
+            + (f" (the preceding unmount also failed: {unmount_error})" if unmount_error else "")
+        ) from exc
+
     return {"ok": True, "snapshot_id": snapshot_id, "rolled_back": True}
 
 

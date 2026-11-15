@@ -406,3 +406,43 @@ def test_agent_context_carries_siblings_and_remaining_budget(spec, env, tmp_path
     assert ctx.budget.usd == pytest.approx(10.0)
     assert any(getattr(s, "branch_id", None) == "b0.1" for s in ctx.siblings)
     assert "be quick" in ctx.notes
+
+
+# ---- infrastructure failures must not kill a healthy branch ---------
+
+def test_a_failed_fork_is_feedback_not_a_dead_branch(spec, env, tmp_path):
+    """A live branch at 0.0 was killed by a fork error once. The branch keeps
+    its own line; a fork that cannot be created costs one tool call."""
+    def exploding_forker(**kw):
+        raise RuntimeError("App create rate limit exceeded")
+
+    runner, _ = build(spec, env, tmp_path, [
+        FakeAction("train", {"steps": 100}),
+        FakeAction("fork", {"new_reward": {"weights": {"reached_goal": 2.0}}}),
+        FakeAction("evaluate"),
+        FakeAction("report", {"summary": "carried on regardless"}),
+    ], scores=[0.5], forker=exploding_forker)
+
+    out = runner.run()
+    assert out["status"] == "succeeded"
+    assert any("could not be created" in str(r) for _, r in runner.agent.observed)
+    assert any("your own branch is unaffected" in str(r) for _, r in runner.agent.observed)
+
+
+def test_a_failed_rollback_is_feedback_not_a_dead_branch(spec, env, tmp_path):
+    def exploding_forker(**kw):
+        if kw.get("rollback_to"):
+            raise RuntimeError("path already has a mount: /workspace")
+        return {"snapshot_id": "im-x"}
+
+    runner, _ = build(spec, env, tmp_path, [
+        FakeAction("rollback", {"snapshot_id": "im-old"}),
+        FakeAction("train", {"steps": 100}),
+        FakeAction("evaluate"),
+        FakeAction("report", {"summary": "still fine"}),
+    ], scores=[0.33], forker=exploding_forker)
+
+    out = runner.run()
+    assert out["status"] == "succeeded"
+    assert any("rollback failed" in str(r) for _, r in runner.agent.observed)
+    assert any("your weights are unchanged" in str(r) for _, r in runner.agent.observed)
