@@ -1573,3 +1573,53 @@ def test_durable_progress_advances_only_with_the_export():
     # And the workspace copy still advances every iteration -- it is the
     # fallback when no durable state exists at all.
     assert "state_path.write_text(json.dumps(progress))" in src
+
+
+def test_a_train_call_is_bounded_by_wall_clock_not_only_by_steps():
+    """`steps` is a target; the deadline is made of seconds.
+
+    `branch_main._cap_steps` converts the remaining clock into a step count,
+    but it can only do that after measuring a rate -- so on the *first* call it
+    falls back to a pure step ceiling. On an environment costing ~0.15 s per
+    step that ceiling was 194 minutes, and one branch spent 112 minutes of a
+    5-hour deadline inside a single tool call without ever evaluating. A
+    branch that never returns never evaluates, and an unmeasured policy is
+    worth nothing.
+
+    Only the trainer knows how many seconds a step costs, so the ceiling is
+    enforced there and it returns what it has.
+    """
+    import inspect
+
+    from autobranch.posttrain_full import FullHyper, train
+
+    assert FullHyper.parse({}).max_seconds == 1200.0
+
+    src = inspect.getsource(train)
+    assert "hyp.max_seconds" in src
+    # Checked at the top of the loop: an iteration here is ~12 minutes, so
+    # testing after collecting would overshoot by a whole one.
+    loop = src[src.index('while progress["step"] < int(steps):'):]
+    head = loop[:loop.index("iteration = progress")]
+    assert "max_seconds" in head, "the ceiling must be checked before collecting"
+    assert "break" in head
+
+
+def test_the_first_call_step_ceiling_is_not_inflated():
+    """It was DEFAULT_TRAIN_STEPS * 4, which is hours on a slow environment.
+
+    Asserted on behaviour rather than on the source text: the first version of
+    this test grepped for the old expression and failed on the comment that
+    explains why it is gone.
+    """
+    from autobranch import branch_main
+    from autobranch.branch_main import DEFAULT_TRAIN_STEPS
+
+    runner = branch_main.BranchRunner.__new__(branch_main.BranchRunner)
+    runner.state = type("S", (), {"last_metrics": {}, "steps_done": 0})()
+
+    # No measured rate yet, and plenty of clock: the ceiling is the default,
+    # not a multiple of it.
+    assert runner._cap_steps(10**9, seconds_left_now=10**6) == DEFAULT_TRAIN_STEPS
+    # A smaller request is still honoured.
+    assert runner._cap_steps(500, seconds_left_now=10**6) == 500

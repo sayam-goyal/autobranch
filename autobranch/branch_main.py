@@ -495,9 +495,17 @@ class BranchRunner:
             if observed and self.state.steps_done:
                 rate = self.state.steps_done / max(1e-6, float(observed))
         if not rate or rate <= 0:
-            # First call on this branch: cap by the per-call ceiling only, and
-            # let the measured rate tighten it from the second call onward.
-            return min(steps, DEFAULT_TRAIN_STEPS * 4)
+            # First call on this branch: no measured rate exists yet, so there
+            # is no honest way to convert the clock into steps. This used to
+            # allow DEFAULT_TRAIN_STEPS * 4, which on an environment costing
+            # ~0.15 s per step is over three hours -- a first call that eats
+            # the whole deadline and never evaluates.
+            #
+            # The ceiling is now the default, not four times it, and the real
+            # protection lives in the trainer, which bounds its own wall clock
+            # and returns what it has. A step ceiling cannot do this job: the
+            # same number is seconds in one environment and hours in another.
+            return min(steps, DEFAULT_TRAIN_STEPS)
         affordable = int(float(rate) * min(usable, MAX_TRAIN_SECONDS))
         return max(1, min(steps, affordable))
 
