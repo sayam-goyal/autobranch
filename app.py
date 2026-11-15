@@ -179,7 +179,15 @@ def _launcher(spec, constraints, budget, run_id: str) -> str:
     `server.modal_launcher` resolves `spawn_run` by name off the *deployed*
     app, which is right for the long-lived web container. Inside a function
     defined here the object is already hydrated, so spawning it directly also
-    works under an ephemeral `modal run`, where no deployed app exists.
+    resolves under an ephemeral `modal run`, where no deployed app exists.
+
+    It does not *survive* one, though, and that distinction cost a launch. A
+    plain `modal run` stops its ephemeral app as soon as the local entrypoint
+    returns, which kills this spawn before the branch sandbox exists -- the
+    registry ends up holding a queued run with zero branches and zero
+    containers, which reads like a crash and is actually a lifetime. Submit
+    with `modal run --detach` (what examples/sf3/launch.sh does) or against a
+    deployed app.
     """
     call = spawn_run.spawn(
         run_id=run_id,

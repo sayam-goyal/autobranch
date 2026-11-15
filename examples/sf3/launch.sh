@@ -76,7 +76,12 @@ echo "  max branches  ${MAX_BRANCHES}"
 echo "  launched at   $(date '+%Y-%m-%d %H:%M:%S %Z') (epoch $(date +%s))"
 echo
 
-exec modal run app.py::cli_submit \
+# --detach is load-bearing, not caution. `submit_bundle` spawns the root branch
+# with `spawn_run.spawn(...)`, and under a plain `modal run` the ephemeral app
+# stops the moment the local entrypoint returns -- which kills the spawn. The
+# first launch left run-bf5c9b0ae9 queued forever with zero branches and zero
+# containers: the registry had the run, nothing was running it.
+exec modal run --detach app.py::cli_submit \
   --bundle examples/sf3 \
   --constraints "${CONSTRAINTS}" \
   --usd "${USD}" \
