@@ -72,9 +72,20 @@ objective:
   evaluator: sf3_env:evaluate
   direction: maximize
   budget:
-    matches: 40
+    # Sized against the measured lane, not chosen round. A decision costs
+    # ~0.25 s of emulator time and a 2-of-3 match runs ~1600 decisions, so 8
+    # concurrent lanes score 8 matches in ~8 minutes. 24 matches is ~24
+    # minutes per evaluation, which a 5.5-hour window can afford several times
+    # per branch; 40 matches in both modes would have been 80 minutes a call.
+    matches: 24
     difficulty: 8
     concurrency: 8
+    # Stochastic only. The predecessor project's policy was competent while
+    # sampling and won 0 of 100 at its mode, and that degeneracy was inherited
+    # from the base model rather than caused by RL -- so the sampled number is
+    # the honest one to steer the search by, and the argmax is worth measuring
+    # once at the end rather than on every call.
+    modes: [stochastic]
     deterministic: false
 
 # The TRAINER's image. The emulator runs a different one (MAME, 2 CPUs) built

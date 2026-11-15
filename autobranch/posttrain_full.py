@@ -697,9 +697,9 @@ def train(
             except Exception:  # noqa: BLE001 - teardown must not mask a result
                 pass
 
+    torch = _import_or_explain("torch", "torch>=2.2")
     checkpoint = ws / "checkpoints" / "latest.pt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    torch = _import_or_explain("torch", "torch>=2.2")
     torch.save(
         {
             "format": CHECKPOINT_FORMAT,
@@ -726,6 +726,21 @@ def train(
         },
         checkpoint,
     )
+
+    # Hand the GPU back before returning. The evaluator loads its own copy of
+    # the policy from the HF export -- deliberately, so that scoring imports no
+    # trainer state -- and 16 GiB does not fit beside the 49.5 GiB this run
+    # reserved. Dropping the references is not enough: torch's caching
+    # allocator holds reserved blocks until empty_cache, so an evaluation would
+    # OOM with most of the card apparently free.
+    del model, optimizer
+    try:
+        import gc
+
+        gc.collect()
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - a failure to tidy must not fail a run
+        pass
 
     return TrainResult(
         steps_done=int(progress["step"]),
