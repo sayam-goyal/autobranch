@@ -734,7 +734,8 @@ class VisionActionPolicy:
     """
 
     def __init__(self, model, processor, vocab: ActionVocab, *, device: str = "cuda",
-                 temperature: float = 1.0, action_names: Sequence[str] = ()) -> None:
+                 temperature: float = 1.0, action_names: Sequence[str] = (),
+                 arch: dict[str, Any] | None = None) -> None:
         self.model = model
         self.processor = prepare_vision_processor(processor)
         self.vocab = vocab
@@ -743,6 +744,25 @@ class VisionActionPolicy:
         self.action_names = tuple(action_names)
         self.deterministic = False
         self._rng = np.random.default_rng(0)
+        # `objective.evaluate` records `policy.arch` in every score's detail, so
+        # a policy without one cannot be scored at all. `LoraPolicy` has always
+        # had it; this class did not, and the omission was invisible until a
+        # grpo_full branch finished training and called evaluate for the first
+        # time -- two and a half hours in, having produced no score and with no
+        # way to ever produce one.
+        #
+        # Derived from what the policy actually is when the caller does not
+        # supply a record, so it is never absent and never a lie.
+        self.arch = dict(arch) if arch else {
+            "kind": "lm_full_discrete",
+            "n_actions": len(vocab),
+            "act_dim": 1,
+            "temperature": float(temperature),
+            "action_vocab": vocab.to_dict(),
+            "prompt": {"kind": "vision_chat",
+                       "labels": [l.strip() for l in vocab.labels],
+                       "action_names": list(action_names)},
+        }
 
     def reseed(self, seed: int) -> None:
         self._rng = np.random.default_rng(int(seed) & 0x7FFFFFFF)
@@ -908,5 +928,7 @@ def load_full_policy(
         ActionVocab.from_dict(arch["action_vocab"]),
         device=device,
         temperature=float(arch.get("temperature", 1.0)),
-        action_names=tuple((arch.get("prompt") or {}).get("labels") or ()),
+        action_names=tuple((arch.get("prompt") or {}).get("action_names")
+                           or (arch.get("prompt") or {}).get("labels") or ()),
+        arch=arch,
     )
