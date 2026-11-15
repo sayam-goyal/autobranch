@@ -1,0 +1,760 @@
+{
+ "rl": [
+  {
+   "id": "b0",
+   "status": "abandoned",
+   "spend": 1.103,
+   "exp": "rl-pilot",
+   "pts": [
+    [
+     20000000,
+     0.343
+    ],
+    [
+     80000000,
+     0.354
+    ],
+    [
+     140000000,
+     0.349
+    ],
+    [
+     201000000,
+     0.347
+    ]
+   ],
+   "reason": "no objective improvement over 3 evaluations (held at 0.354)"
+  },
+  {
+   "id": "b0.1",
+   "status": "abandoned",
+   "spend": 2.156,
+   "exp": "rl-pilot-g16",
+   "pts": [
+    [
+     60000000,
+     0.345
+    ],
+    [
+     180000000,
+     0.361
+    ],
+    [
+     354000000,
+     0.365
+    ],
+    [
+     393000000,
+     0.364
+    ]
+   ],
+   "reason": "no objective improvement over 3 evaluations (held at 0.365)"
+  },
+  {
+   "id": "b0.2",
+   "status": "abandoned",
+   "spend": 1.147,
+   "exp": "rl-v2",
+   "pts": [
+    [
+     50000000,
+     0.337
+    ],
+    [
+     100000000,
+     0.401
+    ],
+    [
+     150000000,
+     0.429
+    ],
+    [
+     209000000,
+     0.429
+    ]
+   ],
+   "reason": "dominated by a sibling by 0.493 on the objective"
+  },
+  {
+   "id": "b0.2.1",
+   "status": "abandoned",
+   "spend": 1.103,
+   "exp": "rl-approach-only",
+   "pts": [
+    [
+     51000000,
+     0.599
+    ],
+    [
+     101000000,
+     0.457
+    ],
+    [
+     151000000,
+     0.389
+    ],
+    [
+     201000000,
+     0.353
+    ]
+   ],
+   "reason": "peaked at 0.599 at 51M then fell to 0.353 while training return rose 20x -- over-optimisation, caught by the independent evaluator"
+  },
+  {
+   "id": "b0.2.2",
+   "status": "abandoned",
+   "spend": 3.083,
+   "exp": "rl-v2-lowtouch",
+   "pts": [
+    [
+     150000000,
+     0.731
+    ],
+    [
+     300000000,
+     0.85
+    ],
+    [
+     450000000,
+     0.792
+    ],
+    [
+     562000000,
+     0.738
+    ]
+   ],
+   "reason": "peaked at 0.850 at 300M then decayed to 0.738; the same over-optimisation as the parent, slower"
+  },
+  {
+   "id": "b0.2.3",
+   "status": "succeeded",
+   "spend": 6.254,
+   "exp": "rl-v3",
+   "pts": [
+    [
+     100000000,
+     0.346
+    ],
+    [
+     300000000,
+     0.714
+    ],
+    [
+     600000000,
+     0.874
+    ],
+    [
+     800000000,
+     0.903
+    ],
+    [
+     1062000000,
+     0.922
+    ],
+    [
+     1140000000,
+     0.918
+    ]
+   ],
+   "reason": null
+  },
+  {
+   "id": "b0.2.3.1",
+   "status": "abandoned",
+   "spend": 2.288,
+   "exp": "rl-v4",
+   "pts": [
+    [
+     101000000,
+     0.731
+    ],
+    [
+     200000000,
+     0.648
+    ],
+    [
+     300000000,
+     0.571
+    ],
+    [
+     417000000,
+     0.53
+    ]
+   ],
+   "reason": "peaked at 0.731 at 101M then decayed to 0.530; annealing did not rescue the strong-shaping start, so the damage is done before the anneal takes effect"
+  },
+  {
+   "id": "b0.2.3.2",
+   "status": "succeeded",
+   "spend": 3.297,
+   "exp": "rl-v3-seed1",
+   "pts": [
+    [
+     100000000,
+     0.342
+    ],
+    [
+     300000000,
+     0.699
+    ],
+    [
+     556000000,
+     0.896
+    ],
+    [
+     601000000,
+     0.896
+    ]
+   ],
+   "reason": null
+  },
+  {
+   "id": "b0.3",
+   "status": "abandoned",
+   "spend": 2.2,
+   "exp": "rl-v3-noshaping",
+   "pts": [
+    [
+     100000000,
+     0.346
+    ],
+    [
+     200000000,
+     0.351
+    ],
+    [
+     354000000,
+     0.355
+    ],
+    [
+     401000000,
+     0.355
+    ]
+   ],
+   "reason": "flat for 401M steps at 0.355 -- 7.9 touches per episode against rl-v3's, so nothing was learned; the control confirms shaping is load-bearing"
+  },
+  {
+   "id": "b0.1.1",
+   "status": "abandoned",
+   "spend": 7.269,
+   "exp": "rl-pilot-g6",
+   "pts": [
+    [
+     200000000,
+     0.361
+    ],
+    [
+     600000000,
+     0.688
+    ],
+    [
+     1000000000,
+     0.901
+    ],
+    [
+     1210000000,
+     0.93
+    ],
+    [
+     1325000000,
+     0.922
+    ]
+   ],
+   "reason": "reached 0.930, matching the winner's ceiling, but needed 1,210M steps against rl-v3's 1,062M for the same result -- kept as evidence that the shaping window has two edges"
+  }
+ ],
+ "tetris": [
+  {
+   "id": "b0",
+   "status": "abandoned",
+   "spend": 0.742,
+   "exp": "tetris-sweep-s0",
+   "rep": "flat_240",
+   "pts": [
+    [
+     1000000,
+     0.0
+    ],
+    [
+     2000000,
+     0.0
+    ],
+    [
+     4000000,
+     0.0
+    ]
+   ],
+   "selfplay": 0.673
+  },
+  {
+   "id": "b0.1",
+   "status": "abandoned",
+   "spend": 0.751,
+   "exp": "tetris-sweep-s2",
+   "rep": "flat_240",
+   "pts": [
+    [
+     1000000,
+     0.0
+    ],
+    [
+     2000000,
+     0.0
+    ],
+    [
+     4000000,
+     0.0
+    ]
+   ],
+   "selfplay": 0.68
+  },
+  {
+   "id": "b0.2",
+   "status": "abandoned",
+   "spend": 0.748,
+   "exp": "tetris-sweep-s5",
+   "rep": "flat_240",
+   "pts": [
+    [
+     1000000,
+     0.0
+    ],
+    [
+     2000000,
+     0.0
+    ],
+    [
+     4000000,
+     0.0
+    ]
+   ],
+   "selfplay": 0.746
+  },
+  {
+   "id": "b0.3",
+   "status": "abandoned",
+   "spend": 0.761,
+   "exp": "tetris-sweep2-c1",
+   "rep": "flat_240",
+   "pts": [
+    [
+     1000000,
+     0.0
+    ],
+    [
+     2000000,
+     0.0
+    ],
+    [
+     4000000,
+     0.0
+    ]
+   ],
+   "selfplay": 0.807
+  },
+  {
+   "id": "b0.3.1",
+   "status": "abandoned",
+   "spend": 0.754,
+   "exp": "tetris-sweep2-c2",
+   "rep": "flat_240",
+   "pts": [
+    [
+     1000000,
+     0.0
+    ],
+    [
+     2000000,
+     0.0
+    ],
+    [
+     4000000,
+     0.0
+    ]
+   ],
+   "selfplay": 0.372
+  },
+  {
+   "id": "b0.3.2",
+   "status": "abandoned",
+   "spend": 0.744,
+   "exp": "tetris-sweep2-c3",
+   "rep": "flat_240",
+   "pts": [
+    [
+     1000000,
+     0.0
+    ],
+    [
+     2000000,
+     0.0
+    ],
+    [
+     4000000,
+     0.0
+    ]
+   ],
+   "selfplay": 0.709
+  },
+  {
+   "id": "b0.1.1",
+   "status": "succeeded",
+   "spend": 3.118,
+   "exp": "tetris-as-abl",
+   "rep": "afterstate_22",
+   "pts": [
+    [
+     3000000,
+     0.962
+    ],
+    [
+     26000000,
+     0.994
+    ]
+   ],
+   "selfplay": null
+  },
+  {
+   "id": "b0.1.1.1",
+   "status": "abandoned",
+   "spend": 0.688,
+   "exp": "tetris-as-a1",
+   "rep": "afterstate_22",
+   "pts": [
+    [
+     3000000,
+     0.93
+    ]
+   ],
+   "selfplay": null
+  },
+  {
+   "id": "b0.1.1.2",
+   "status": "succeeded",
+   "spend": 4.206,
+   "exp": "tetris-as-a2",
+   "rep": "afterstate_22",
+   "pts": [
+    [
+     3000000,
+     0.97
+    ],
+    [
+     30000000,
+     0.974
+    ]
+   ],
+   "selfplay": null
+  },
+  {
+   "id": "b0.1.1.2.1",
+   "status": "succeeded",
+   "spend": 9.874,
+   "exp": "tetris-as-main-c",
+   "rep": "afterstate_22_wide",
+   "pts": [
+    [
+     8000000,
+     0.978
+    ],
+    [
+     23000000,
+     0.98
+    ],
+    [
+     30018985,
+     0.982
+    ]
+   ],
+   "selfplay": null
+  }
+ ],
+ "sf3": [
+  {
+   "step": 4800,
+   "iteration": 1,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.0017486979166666647,
+   "damage_taken_per_decision": 0.0008502604166666668,
+   "rounds_won": 4,
+   "shaping_only": false,
+   "rounds_lost": 0,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 629.7,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.33369334080174246,
+   "return_std": 0.4054402680497119,
+   "loss": -0.06836555153131485,
+   "entropy": 0.4341423218138516,
+   "grad_norm": 95.5,
+   "clip_frac": 0.0078125,
+   "ratio_mean": 1.0005994564853609,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.0005994564853608608
+  },
+  {
+   "step": 9600,
+   "iteration": 2,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.002058593749999997,
+   "damage_taken_per_decision": 0.0008567708333333335,
+   "rounds_won": 8,
+   "shaping_only": false,
+   "rounds_lost": 0,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 1294.2,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.6524245013498031,
+   "return_std": 0.356631942654009,
+   "loss": -0.007977816625498235,
+   "entropy": 0.5263342233374715,
+   "grad_norm": 65.5,
+   "clip_frac": 0.03125,
+   "ratio_mean": 0.99933349667117,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.0006665033288300037
+  },
+  {
+   "step": 14400,
+   "iteration": 3,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.0018984374999999993,
+   "damage_taken_per_decision": 0.0008984375000000007,
+   "rounds_won": 6,
+   "shaping_only": false,
+   "rounds_lost": 0,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 1971.3,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.4751558097082189,
+   "return_std": 0.40120652024812353,
+   "loss": -0.07375771692022681,
+   "entropy": 0.593272378668189,
+   "grad_norm": 65.0,
+   "clip_frac": 0.03125,
+   "ratio_mean": 1.0055829477496445,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.005582947749644518
+  },
+  {
+   "step": 19200,
+   "iteration": 4,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.00257161458333333,
+   "damage_taken_per_decision": 0.001104166666666667,
+   "rounds_won": 7,
+   "shaping_only": false,
+   "rounds_lost": 0,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 2687.1,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.4565815656551261,
+   "return_std": 0.43271541982489126,
+   "loss": 0.027576804161071777,
+   "entropy": 0.4895570264197886,
+   "grad_norm": 141.0,
+   "clip_frac": 0.0234375,
+   "ratio_mean": 1.0067840081173927,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.006784008117392659
+  },
+  {
+   "step": 24000,
+   "iteration": 5,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.0019348958333333319,
+   "damage_taken_per_decision": 0.0012656250000000013,
+   "rounds_won": 6,
+   "shaping_only": false,
+   "rounds_lost": 1,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 3441.3,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.3915801889630497,
+   "return_std": 0.5164590183060579,
+   "loss": -0.07133298693224788,
+   "entropy": 0.6011216016486287,
+   "grad_norm": 166.0,
+   "clip_frac": 0.0078125,
+   "ratio_mean": 0.9950275799492374,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.004972420050762594
+  },
+  {
+   "step": 28800,
+   "iteration": 6,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.0020507812499999984,
+   "damage_taken_per_decision": 0.0008984375,
+   "rounds_won": 6,
+   "shaping_only": false,
+   "rounds_lost": 1,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 4141.9,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.4042734142277674,
+   "return_std": 0.5437110741963784,
+   "loss": -0.06122421409236267,
+   "entropy": 0.5899884197860956,
+   "grad_norm": 130.0,
+   "clip_frac": 0.02734375,
+   "ratio_mean": 0.9974539674003609,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.0025460325996391475
+  },
+  {
+   "step": 33600,
+   "iteration": 7,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.0021041666666666656,
+   "damage_taken_per_decision": 0.0009270833333333336,
+   "rounds_won": 8,
+   "shaping_only": false,
+   "rounds_lost": 0,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 4914.5,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.6400250688295362,
+   "return_std": 0.3431246594898407,
+   "loss": 0.02475526207126677,
+   "entropy": 0.5594426686875522,
+   "grad_norm": 80.5,
+   "clip_frac": 0.01953125,
+   "ratio_mean": 0.990762229077518,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.009237770922482014
+  },
+  {
+   "step": 38400,
+   "iteration": 8,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.0021080729166666643,
+   "damage_taken_per_decision": 0.0010729166666666667,
+   "rounds_won": 7,
+   "shaping_only": false,
+   "rounds_lost": 1,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 5946.3,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.46055579327220614,
+   "return_std": 0.5423585481830924,
+   "loss": -0.12670259969308972,
+   "entropy": 0.6777407228946686,
+   "grad_norm": 112.5,
+   "clip_frac": 0.0234375,
+   "ratio_mean": 1.0078280658926815,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.00782806589268148
+  },
+  {
+   "step": 43200,
+   "iteration": 9,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.0021380208333333308,
+   "damage_taken_per_decision": 0.000983072916666667,
+   "rounds_won": 6,
+   "shaping_only": false,
+   "rounds_lost": 0,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 6588.3,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.4686585925473118,
+   "return_std": 0.40955244866477153,
+   "loss": -0.05788261070847511,
+   "entropy": 0.6748089548200369,
+   "grad_norm": 118.5,
+   "clip_frac": 0.04296875,
+   "ratio_mean": 1.010002936469391,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.010002936469390988
+  },
+  {
+   "step": 48000,
+   "iteration": 10,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.002111979166666664,
+   "damage_taken_per_decision": 0.0013007812500000007,
+   "rounds_won": 7,
+   "shaping_only": false,
+   "rounds_lost": 0,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 7618.8,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.5082796852836243,
+   "return_std": 0.37973888037907627,
+   "loss": 0.052284829784184694,
+   "entropy": 0.6521708983927965,
+   "grad_norm": 91.5,
+   "clip_frac": 0.03125,
+   "ratio_mean": 1.0037412904202938,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.003741290420293808
+  },
+  {
+   "step": 52800,
+   "iteration": 11,
+   "decisions": 4800,
+   "decisions_trained": 256,
+   "invalid_move_rate": 0.0,
+   "damage_dealt_per_decision": 0.0023658854166666646,
+   "damage_taken_per_decision": 0.0012109375000000006,
+   "rounds_won": 8,
+   "shaping_only": false,
+   "rounds_lost": 0,
+   "reward_fingerprint": "6ab8222701f9",
+   "wall_seconds": 8291.3,
+   "groups": 1,
+   "zero_variance_groups": 0,
+   "zero_variance_group_fraction": 0.0,
+   "return_mean": 0.5813959962842536,
+   "return_std": 0.36944968081126206,
+   "loss": 0.07677529356442392,
+   "entropy": 0.6927734334021807,
+   "grad_norm": 102.0,
+   "clip_frac": 0.02734375,
+   "ratio_mean": 0.9874631321290508,
+   "micro_batches": 32,
+   "first_epoch_ratio_drift": 0.012536867870949209
+  }
+ ]
+}

@@ -1,0 +1,349 @@
+<style>
+:root{
+  --ground:#f7f8fa; --surface:#ffffff; --line:#d8dde5;
+  --ink:#121820; --muted:#5b6673; --faint:#8a94a2;
+  --objective:#1f6feb;      /* the number that counts */
+  --signal:#9a6b43;         /* training signal: seductive, not evidence */
+  --good:#1a7f37; --bad:#cf222e; --grid:#e6e9ef;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0e1116; --surface:#161b22; --line:#2a313c;
+    --ink:#e6edf3; --muted:#9aa5b1; --faint:#6e7781;
+    --objective:#4d8dff; --signal:#b08968;
+    --good:#3fb950; --bad:#f85149; --grid:#1d2430;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0e1116; --surface:#161b22; --line:#2a313c;
+  --ink:#e6edf3; --muted:#9aa5b1; --faint:#6e7781;
+  --objective:#4d8dff; --signal:#b08968;
+  --good:#3fb950; --bad:#f85149; --grid:#1d2430;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font:15px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
+.wrap{max-width:900px;margin:0 auto;padding:56px 28px 96px}
+header{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:8px}
+h1{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:clamp(26px,4.4vw,40px); line-height:1.12; letter-spacing:-0.025em;
+  margin:0 0 14px; text-wrap:balance; font-weight:600;
+}
+.lede{font-size:17px;color:var(--muted);max-width:66ch;margin:0}
+.meta{
+  margin-top:20px;display:flex;flex-wrap:wrap;gap:8px 18px;
+  font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--faint);
+  letter-spacing:.04em;text-transform:uppercase;
+}
+.exhibit{padding:44px 0;border-bottom:1px solid var(--line)}
+.exhibit:last-of-type{border-bottom:0}
+.eyebrow{
+  font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);margin:0 0 10px;
+}
+h2{font-size:21px;line-height:1.3;margin:0 0 10px;text-wrap:balance;font-weight:620;letter-spacing:-0.01em}
+.claim{color:var(--muted);max-width:66ch;margin:0 0 22px}
+figure{margin:0}
+.plot{
+  background:var(--surface);border:1px solid var(--line);border-radius:4px;
+  padding:10px 6px 2px;overflow-x:auto;
+}
+svg{display:block;width:100%;height:auto;min-width:620px}
+figcaption{
+  margin-top:12px;font-size:13.5px;color:var(--muted);max-width:70ch;
+  border-left:2px solid var(--line);padding-left:14px;
+}
+figcaption b{color:var(--ink);font-weight:600}
+.caveat{
+  margin-top:14px;font-size:13.5px;color:var(--muted);max-width:70ch;
+  border-left:2px solid var(--signal);padding-left:14px;
+}
+.caveat b{color:var(--signal);font-weight:600}
+/* chart primitives */
+.grid{stroke:var(--grid);stroke-width:1}
+.axis{stroke:var(--line);stroke-width:1}
+.tick{fill:var(--faint);font-family:ui-monospace,Menlo,monospace;font-size:10.5px;
+      font-variant-numeric:tabular-nums}
+.ty{text-anchor:end}.tx{text-anchor:middle}.pt{text-anchor:middle;fill:var(--muted)}
+.lg{text-anchor:start;fill:var(--muted)}
+.axlab{fill:var(--muted);font-size:11.5px;text-anchor:middle;
+       font-family:ui-monospace,Menlo,monospace;letter-spacing:.04em}
+.ln{fill:none;stroke:var(--faint);stroke-width:1.2;opacity:.45}
+.ln.win{stroke:var(--objective);stroke-width:2.4;opacity:1}
+.ln.collapse{stroke:var(--bad);stroke-width:2;opacity:1}
+.ln.flat{stroke:var(--signal);stroke-width:2;opacity:1}
+.ln.signal{stroke:var(--signal);stroke-width:2;opacity:1}
+.ln.muted2{stroke:var(--faint);stroke-width:1.6;opacity:.9;stroke-dasharray:4 3}
+.dot{fill:var(--faint)}
+.dot.win{fill:var(--objective)}.dot.collapse{fill:var(--bad)}
+.dot.signal{fill:var(--signal)}.dot.pruned{fill:var(--faint);opacity:.6}
+.ideal{fill:none;stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}
+.note{font-family:ui-monospace,Menlo,monospace;font-size:11px;fill:var(--muted)}
+/* A label that has to sit over a line still has to be readable. The halo is
+   the panel colour, so it knocks back the line without hiding it. */
+.note,.pt{paint-order:stroke fill;stroke:var(--surface);stroke-width:3px;
+          stroke-linejoin:round;stroke-opacity:.9}
+.note.win{fill:var(--objective)}.note.collapse{fill:var(--bad)}
+.note.flat{fill:var(--signal)}.note.muted{fill:var(--faint)}
+.bar{height:20px}
+.bar.win{fill:var(--objective)}.bar.pruned{fill:var(--faint);opacity:.55}
+.bar.live{fill:var(--good)}
+.ci{stroke:var(--ink);stroke-width:1.4;opacity:.75}
+.barlab{fill:var(--ink);font-size:13px;text-anchor:end}
+.barsub{fill:var(--faint);font-size:11px;text-anchor:end;
+        font-family:ui-monospace,Menlo,monospace}
+.barval{fill:var(--muted);font-size:11.5px;font-family:ui-monospace,Menlo,monospace;
+        font-variant-numeric:tabular-nums}
+.swatch{opacity:.95}
+.swatch.signal{fill:var(--signal)}.swatch.muted2{fill:var(--faint)}
+.swatch.win{fill:var(--objective)}
+footer{margin-top:40px;font-size:13px;color:var(--faint);max-width:70ch}
+footer code{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--muted)}
+@media (prefers-reduced-motion:no-preference){
+  .exhibit{animation:rise .5s ease-out both}
+  @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+}
+</style>
+<div class="wrap">
+<header>
+  <h1>What the measurements actually support</h1>
+  <p class="lede">autobranch searches reward functions with a tree of agents in Modal
+  sandboxes. Every number below came from an evaluator that imports no reward code —
+  including the one case where the search found nothing at all.</p>
+  <div class="meta">
+    <span>4 environments</span><span>30+ branches</span>
+    <span>objective-only evidence</span><span>intervals, not point estimates</span>
+  </div>
+</header>
+<section class="exhibit">
+<p class="eyebrow">Exhibit 1</p>
+<h2>The reward has a window, with an edge on both sides</h2>
+<p class="claim">Ten branches of a Rocket League search, each a different reward, all scored by the same evaluator. The spread is not noise — it is the entire outcome.</p>
+<figure><div class="plot"><svg viewBox="0 0 760 340" role="img" aria-label="Rocket League objective per branch over training steps" preserveAspectRatio="xMidYMid meet">
+<line class="grid" x1="56" y1="298.0" x2="742" y2="298.0"/>
+<text class="tick ty" x="48" y="301.5">0.30</text>
+<line class="grid" x1="56" y1="234.4" x2="742" y2="234.4"/>
+<text class="tick ty" x="48" y="237.9">0.45</text>
+<line class="grid" x1="56" y1="170.7" x2="742" y2="170.7"/>
+<text class="tick ty" x="48" y="174.2">0.60</text>
+<line class="grid" x1="56" y1="107.1" x2="742" y2="107.1"/>
+<text class="tick ty" x="48" y="110.6">0.75</text>
+<line class="grid" x1="56" y1="43.5" x2="742" y2="43.5"/>
+<text class="tick ty" x="48" y="47.0">0.90</text>
+<text class="tick tx" x="56.0" y="316">0M</text>
+<text class="tick tx" x="211.3" y="316">300M</text>
+<text class="tick tx" x="366.6" y="316">600M</text>
+<text class="tick tx" x="522.0" y="316">900M</text>
+<text class="tick tx" x="677.3" y="316">1200M</text>
+<line class="axis" x1="56" y1="18" x2="56" y2="298"/>
+<line class="axis" x1="56" y1="298" x2="742" y2="298"/>
+<text class="axlab" x="399" y="334">decision steps</text>
+<text class="axlab rot" transform="translate(14,158) rotate(-90)">win rate vs the scripted chaser</text>
+<path class="ln " d="M66.4,279.8 L97.4,275.1 L128.5,277.2 L160.1,278.1"/>
+<path class="ln " d="M87.1,278.9 L149.2,272.1 L239.3,270.4 L259.5,270.8"/>
+<path class="ln " d="M81.9,282.3 L107.8,255.2 L133.7,243.3 L164.2,243.3"/>
+<path class="ln collapse" d="M82.4,171.2 L108.3,231.4 L134.2,260.2 L160.1,275.5"/>
+<circle class="dot collapse" cx="160.1" cy="275.5" r="3.5"/>
+<path class="ln " d="M133.7,115.2 L211.3,64.7 L289.0,89.3 L347.0,112.2"/>
+<path class="ln win" d="M107.8,278.5 L211.3,122.4 L366.6,54.5 L470.2,42.2 L605.8,34.1 L646.2,35.8"/>
+<circle class="dot win" cx="646.2" cy="35.8" r="3.5"/>
+<path class="ln " d="M108.3,115.2 L159.5,150.4 L211.3,183.0 L271.9,200.4"/>
+<path class="ln " d="M107.8,280.2 L211.3,128.7 L343.9,45.2 L367.2,45.2"/>
+<path class="ln flat" d="M107.8,278.5 L159.5,276.4 L239.3,274.7 L263.6,274.7"/>
+<circle class="dot flat" cx="263.6" cy="274.7" r="3.5"/>
+<path class="ln " d="M159.5,272.1 L366.6,133.4 L573.7,43.0 L682.5,30.7 L742.0,34.1"/>
+<text class="note win" x="597.8" y="62.1" style="text-anchor:end">approach_ball = 3 → peak 0.922</text>
+<text class="note collapse" x="91.4" y="163.2" style="text-anchor:start">peak 0.599</text>
+<text class="note collapse" x="169.1" y="290.5" style="text-anchor:start">fell to 0.353</text>
+<text class="note flat" x="248.3" y="264.7" style="text-anchor:start">no shaping → never left 0.355</text>
+</svg></div>
+<figcaption>At <b>approach_ball = 20</b> the policy peaked at 0.599 and fell to 0.353. With <b>no shaping at all</b> it never left 0.355 in 401M steps. At <b>approach_ball = 3</b> it reached <b>0.922</b>. One weight separates a working policy from two different failures.</figcaption>
+<p class="caveat"><b>Limit.</b> This is the case where searching paid. Exhibit 3 is the case where it found nothing, and that one is equally real.</p></figure>
+</section>
+<section class="exhibit">
+<p class="eyebrow">Exhibit 2</p>
+<h2>Training signal does not predict the objective</h2>
+<p class="claim">Each point is one Tetris branch: how well it was doing against its own self-play opponents, against how well it actually played.</p>
+<figure><div class="plot"><svg viewBox="0 0 760 340" role="img" aria-label="Tetris self-play win rate against the independent objective" preserveAspectRatio="xMidYMid meet">
+<line class="grid" x1="56" y1="285.3" x2="742" y2="285.3"/>
+<text class="tick ty" x="48" y="288.8">0.00</text>
+<line class="grid" x1="56" y1="221.6" x2="742" y2="221.6"/>
+<text class="tick ty" x="48" y="225.1">0.25</text>
+<line class="grid" x1="56" y1="158.0" x2="742" y2="158.0"/>
+<text class="tick ty" x="48" y="161.5">0.50</text>
+<line class="grid" x1="56" y1="94.4" x2="742" y2="94.4"/>
+<text class="tick ty" x="48" y="97.9">0.75</text>
+<line class="grid" x1="56" y1="30.7" x2="742" y2="30.7"/>
+<text class="tick ty" x="48" y="34.2">1.00</text>
+<text class="tick tx" x="56.0" y="316">0.30</text>
+<text class="tick tx" x="243.1" y="316">0.45</text>
+<text class="tick tx" x="430.2" y="316">0.60</text>
+<text class="tick tx" x="617.3" y="316">0.75</text>
+<line class="axis" x1="56" y1="18" x2="56" y2="298"/>
+<line class="axis" x1="56" y1="298" x2="742" y2="298"/>
+<text class="axlab" x="399" y="334">self-play win rate  (the training signal)</text>
+<text class="axlab rot" transform="translate(14,158) rotate(-90)">win rate vs greedy  (the objective)</text>
+<path class="ideal" d="M56.0,208.9 L742.0,68.9"/>
+<circle class="dot signal" cx="521.2" cy="285.3" r="5"/>
+<circle class="dot signal" cx="530.0" cy="285.3" r="5"/>
+<circle class="dot signal" cx="612.3" cy="285.3" r="5"/>
+<circle class="dot signal" cx="688.4" cy="285.3" r="5"/>
+<circle class="dot signal" cx="145.8" cy="285.3" r="5"/>
+<circle class="dot signal" cx="566.1" cy="285.3" r="5"/>
+<text class="note muted" x="739.0" y="48.0" style="text-anchor:end">if the training signal predicted the objective, points would sit here</text>
+<text class="note collapse" x="728.4" y="241.3" style="text-anchor:end">best signal in the sweep: 0.807 → still scored 0.000</text>
+<text class="tick pt" x="145.8" y="273.3" style="text-anchor:middle">b0.3.1</text>
+<text class="tick pt" x="521.2" y="273.3" style="text-anchor:middle">b0</text>
+<text class="tick pt" x="530.0" y="259.3" style="text-anchor:middle">b0.1</text>
+<text class="tick pt" x="566.1" y="273.3" style="text-anchor:middle">b0.3.2</text>
+<text class="tick pt" x="612.3" y="273.3" style="text-anchor:middle">b0.2</text>
+<text class="tick pt" x="688.4" y="273.3" style="text-anchor:middle">b0.3</text>
+</svg></div>
+<figcaption>Every one of these six branches scored <b>0.000</b> against the independent greedy opponent. The arm with the <b>best</b> training signal in the whole sweep — 0.807 — was worth exactly as much as the worst. A search steered by training reward would have selected it and reported progress.</figcaption>
+<p class="caveat"><b>Limit.</b> This is why the objective evaluator imports no reward code, enforced by a test that walks the import graph. An agent that can reach its own measurement can look good without getting good.</p></figure>
+</section>
+<section class="exhibit">
+<p class="eyebrow">Exhibit 3</p>
+<h2>Where the search found nothing — and what that cost</h2>
+<p class="claim">Twenty branches across two projects, plotted as what each one cost against the best it ever scored. Circles are Rocket League, squares Tetris.</p>
+<figure><div class="plot"><svg viewBox="0 0 760 340" role="img" aria-label="Objective reached against branch cost" preserveAspectRatio="xMidYMid meet">
+<line class="grid" x1="56" y1="285.3" x2="742" y2="285.3"/>
+<text class="tick ty" x="48" y="288.8">0.00</text>
+<line class="grid" x1="56" y1="221.6" x2="742" y2="221.6"/>
+<text class="tick ty" x="48" y="225.1">0.25</text>
+<line class="grid" x1="56" y1="158.0" x2="742" y2="158.0"/>
+<text class="tick ty" x="48" y="161.5">0.50</text>
+<line class="grid" x1="56" y1="94.4" x2="742" y2="94.4"/>
+<text class="tick ty" x="48" y="97.9">0.75</text>
+<line class="grid" x1="56" y1="30.7" x2="742" y2="30.7"/>
+<text class="tick ty" x="48" y="34.2">1.00</text>
+<text class="tick tx" x="56.0" y="316">$0</text>
+<text class="tick tx" x="221.4" y="316">$2.5</text>
+<text class="tick tx" x="386.8" y="316">$5</text>
+<text class="tick tx" x="552.3" y="316">$7.5</text>
+<text class="tick tx" x="717.7" y="316">$10</text>
+<line class="axis" x1="56" y1="18" x2="56" y2="298"/>
+<line class="axis" x1="56" y1="298" x2="742" y2="298"/>
+<text class="axlab" x="399" y="334">branch cost (USD)</text>
+<text class="axlab rot" transform="translate(14,158) rotate(-90)">best objective reached</text>
+<circle class="dot pruned" cx="129.0" cy="195.2" r="4.5"/>
+<circle class="dot pruned" cx="198.7" cy="192.4" r="4.5"/>
+<circle class="dot pruned" cx="131.9" cy="176.1" r="4.5"/>
+<circle class="dot pruned" cx="129.0" cy="132.8" r="4.5"/>
+<circle class="dot pruned" cx="260.0" cy="68.9" r="4.5"/>
+<circle class="dot win" cx="469.8" cy="50.6" r="4.5"/>
+<circle class="dot pruned" cx="207.4" cy="99.2" r="4.5"/>
+<circle class="dot win" cx="274.2" cy="57.2" r="4.5"/>
+<circle class="dot pruned" cx="201.6" cy="194.9" r="4.5"/>
+<circle class="dot pruned" cx="537.0" cy="48.5" r="4.5"/>
+<rect class="dot pruned" x="101.1" y="281.3" width="8" height="8"/>
+<rect class="dot pruned" x="101.7" y="281.3" width="8" height="8"/>
+<rect class="dot pruned" x="101.5" y="281.3" width="8" height="8"/>
+<rect class="dot pruned" x="102.4" y="281.3" width="8" height="8"/>
+<rect class="dot pruned" x="101.9" y="281.3" width="8" height="8"/>
+<rect class="dot pruned" x="101.2" y="281.3" width="8" height="8"/>
+<rect class="dot win" x="258.3" y="28.3" width="8" height="8"/>
+<rect class="dot pruned" x="97.5" y="44.5" width="8" height="8"/>
+<rect class="dot win" x="330.3" y="33.3" width="8" height="8"/>
+<rect class="dot win" x="705.3" y="31.3" width="8" height="8"/>
+<text class="note muted" x="126" y="234">9 branches pruned below $2.50 — the search spends its budget on the lines that pay</text>
+</svg></div>
+<figcaption>The cluster along the bottom is the Tetris null: six reward configurations, two independent rewrites, a shaping scale swept 0.0 to 4.0 — all exactly <b>0.000</b>. Establishing that the whole axis was flat cost <b>$4.51</b>, and redirected the project to what did matter.</figcaption>
+<p class="caveat"><b>Limit.</b> A framework that only shows the searches it won is advertising. The useful claim is not that reward search always helps — it is that a null arrives cheaply and legibly instead of as a hunch defended for a week.</p></figure>
+</section>
+<section class="exhibit">
+<p class="eyebrow">Exhibit 4</p>
+<h2>Searched reward against hand-tuned, same harness</h2>
+<p class="claim">Street Fighter III, win rate against the level-8 CPU. The first two bars are matched on model, size and configuration — the reward is the only difference between them.</p>
+<figure><div class="plot"><svg viewBox="0 0 760 340" role="img" aria-label="Hand-tuned versus searched reward with confidence intervals" preserveAspectRatio="xMidYMid meet">
+<text class="barlab" x="286" y="50">r2_hinh — hand-tuned reward</text>
+<text class="barsub" x="286" y="66">Qwen3-4B + LoRA  ·  n=100</text>
+<rect class="bar pruned" x="300.0" y="34" width="167.7" height="20"/>
+<line class="ci" x1="438.0" y1="44" x2="496.3" y2="44"/>
+<line class="ci" x1="438.0" y1="38" x2="438.0" y2="50"/>
+<line class="ci" x1="496.3" y1="38" x2="496.3" y2="50"/>
+<text class="barval" x="506.3" y="49">0.550  [0.45, 0.64]</text>
+<text class="barlab" x="286" y="126">r3_potential — searched reward</text>
+<text class="barsub" x="286" y="142">Qwen3-4B + LoRA  ·  n=100</text>
+<rect class="bar win" x="300.0" y="110" width="240.9" height="20"/>
+<line class="ci" x1="513.5" y1="120" x2="561.7" y2="120"/>
+<line class="ci" x1="513.5" y1="114" x2="513.5" y2="126"/>
+<line class="ci" x1="561.7" y1="114" x2="561.7" y2="126"/>
+<text class="barval" x="571.7" y="125">0.790  [0.70, 0.86]</text>
+<text class="barlab" x="286" y="202">this run — Hinh's reward, our trainer</text>
+<text class="barsub" x="286" y="218">Qwen3-VL-8B full fine-tune  ·  n=24</text>
+<rect class="bar live" x="300.0" y="186" width="228.7" height="20"/>
+<line class="ci" x1="468.0" y1="196" x2="568.3" y2="196"/>
+<line class="ci" x1="468.0" y1="190" x2="468.0" y2="202"/>
+<line class="ci" x1="568.3" y1="190" x2="568.3" y2="202"/>
+<text class="barval" x="578.3" y="201">0.750  [0.55, 0.88]</text>
+<line class="grid" x1="300.0" y1="22" x2="300.0" y2="242"/>
+<text class="tick tx" x="300.0" y="258">0.00</text>
+<line class="grid" x1="376.2" y1="22" x2="376.2" y2="242"/>
+<text class="tick tx" x="376.2" y="258">0.25</text>
+<line class="grid" x1="452.4" y1="22" x2="452.4" y2="242"/>
+<text class="tick tx" x="452.4" y="258">0.50</text>
+<line class="grid" x1="528.7" y1="22" x2="528.7" y2="242"/>
+<text class="tick tx" x="528.7" y="258">0.75</text>
+<line class="grid" x1="604.9" y1="22" x2="604.9" y2="242"/>
+<text class="tick tx" x="604.9" y="258">1.00</text>
+<text class="axlab" x="452" y="334">win rate vs the level-8 CPU · 95% Wilson interval</text>
+</svg></div>
+<figcaption>A potential-shaped reward found by search beat a hand-tuned one by <b>24 points</b> at matched everything. That is the cleanest comparison this project has, because only one thing varies.</figcaption>
+<p class="caveat"><b>Limit.</b> The third bar is the run training right now — a different model entirely (Qwen3-VL-8B fully fine-tuned, not 4B + LoRA) and <b>n=24</b>, so its interval is 33 points wide. It clears the hand-tuned baseline and cannot be separated from the searched one. It is a baseline, not yet a result: that branch is running <i>Hinh's</i> reward.</p></figure>
+</section>
+<section class="exhibit">
+<p class="eyebrow">Exhibit 5</p>
+<h2>The run in flight, on one set of axes</h2>
+<p class="claim">Qwen3-VL-8B-Instruct, full-parameter fine-tune, eleven iterations. Mean return and policy entropy are what the trainer reports every iteration; the single blue point is the only thing that counts.</p>
+<figure><div class="plot"><svg viewBox="0 0 760 340" role="img" aria-label="Live SF3 run: training signal, entropy, and the measured objective" preserveAspectRatio="xMidYMid meet">
+<line class="grid" x1="56" y1="298.0" x2="742" y2="298.0"/>
+<text class="tick ty" x="48" y="301.5">0.00</text>
+<line class="grid" x1="56" y1="228.0" x2="742" y2="228.0"/>
+<text class="tick ty" x="48" y="231.5">0.25</text>
+<line class="grid" x1="56" y1="158.0" x2="742" y2="158.0"/>
+<text class="tick ty" x="48" y="161.5">0.50</text>
+<line class="grid" x1="56" y1="88.0" x2="742" y2="88.0"/>
+<text class="tick ty" x="48" y="91.5">0.75</text>
+<line class="grid" x1="56" y1="18.0" x2="742" y2="18.0"/>
+<text class="tick ty" x="48" y="21.5">1.00</text>
+<text class="tick tx" x="56.0" y="316">1</text>
+<text class="tick tx" x="193.2" y="316">3</text>
+<text class="tick tx" x="330.4" y="316">5</text>
+<text class="tick tx" x="467.6" y="316">7</text>
+<text class="tick tx" x="604.8" y="316">9</text>
+<text class="tick tx" x="742.0" y="316">11</text>
+<line class="axis" x1="56" y1="18" x2="56" y2="298"/>
+<line class="axis" x1="56" y1="298" x2="742" y2="298"/>
+<text class="axlab" x="399" y="334">training iteration</text>
+<text class="axlab rot" transform="translate(14,158) rotate(-90)">value</text>
+<path class="ln signal" d="M56.0,204.6 L124.6,115.3 L193.2,165.0 L261.8,170.2 L330.4,188.4 L399.0,184.8 L467.6,118.8 L536.2,169.0 L604.8,166.8 L673.4,155.7 L742.0,135.2"/>
+<path class="ln muted2" d="M56.0,176.4 L124.6,150.6 L193.2,131.9 L261.8,160.9 L330.4,129.7 L399.0,132.8 L467.6,141.4 L536.2,108.2 L604.8,109.1 L673.4,115.4 L742.0,104.0"/>
+<line class="ci" x1="399.0" y1="143.7" x2="399.0" y2="51.6"/>
+<circle class="dot win" cx="399.0" cy="88.0" r="5"/>
+<text class="note win" x="411" y="80">objective 0.750, n=24</text>
+<rect class="swatch signal" x="66" y="23" width="16" height="3"/>
+<text class="tick lg" x="90" y="30">mean return (training signal)</text>
+<rect class="swatch muted2" x="66" y="39" width="16" height="3"/>
+<text class="tick lg" x="90" y="46">policy entropy</text>
+<rect class="swatch win" x="66" y="55" width="16" height="3"/>
+<text class="tick lg" x="90" y="62">measured objective</text>
+</svg></div>
+<figcaption>Entropy <b>rising</b> from 0.434 to 0.693 nats is the signal worth watching: the predecessor policy collapsed to a single action and won 0 of 100 at its mode. Mean return wanders between 0.33 and 0.65 and — per Exhibit 2 — predicts nothing.</figcaption>
+<p class="caveat"><b>Limit.</b> One measured point against eleven iterations of training signal is the honest ratio of this page: evidence is expensive and training curves are free, which is exactly why the free one must not be used as the verdict.</p></figure>
+</section>
+<footer>
+  <p>Sources: <code>autobranch/seed_runs.py</code> and <code>seed_runs_tetris.py</code>
+  carry the Rocket League and Tetris measurements with a PROVENANCE block naming which
+  parts are measured and which reconstructed; the Street Fighter bars come from
+  <code>SF_REPORT.md</code> (n=100 each) and the live run's own
+  <code>metrics.jsonl</code> on the Modal volume. Intervals are Wilson 95%.
+  Chart coordinates are computed from those files rather than placed by hand, so a point
+  cannot disagree with its own caption.</p>
+</footer>
+</div>
