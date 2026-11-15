@@ -433,12 +433,25 @@ class Registry:
             from autobranch import infra
             from autobranch.ledger import Ledger
 
-            total = float(
-                Ledger(run_id, root=infra.DATA_ROOT, volume=infra.volume).total_usd()
-            )
-            # Trust whichever saw more: a branch that never published its own
-            # record still wrote ledger shards, and vice versa.
-            return round(max(total, from_branches), 6)
+            ledger = Ledger(run_id, root=infra.DATA_ROOT, volume=infra.volume)
+            entries = ledger.entries()
+            total = round(sum(e.usd for e in entries), 6)
+            # When the ledger has entries it *is* the total -- every writer
+            # appends to it, including branches whose own record never
+            # published. `max(total, from_branches)` was the older rule, on the
+            # theory that whichever source saw more had seen more. A stale
+            # record breaks that theory: a forked branch boots from a snapshot
+            # of its parent's workspace and inherited the parent's
+            # `spend_usd`, so three children each reported ~$16 against ~$1.30
+            # of actual ledger spend and the max picked the sum of the lies --
+            # $63 for a run that had spent $22.
+            #
+            # An empty ledger is the one case where the records know more: it
+            # means the shards are unreachable or not yet written, not that
+            # nothing has been spent.
+            if entries:
+                return total
+            return from_branches
         except Exception as exc:  # noqa: BLE001 - off-volume (tests, local dev)
             global _LEDGER_WARNED
             if not _LEDGER_WARNED:
