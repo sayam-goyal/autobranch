@@ -464,6 +464,16 @@ class Registry:
             return rec.state
         if any(b.status not in TERMINAL_STATUSES for b in branches):
             return rec.state
+        # Every branch crashed. A score may still be present -- one can be
+        # recorded from outside the branch, as an independent evaluation -- but
+        # a measurement does not undo a crash, and reporting `succeeded` for a
+        # tree where nothing survived is the most misleading summary available.
+        #
+        # `abandoned` is deliberately not counted here: that is the search
+        # deciding a line is not worth more budget, which is the mechanism
+        # working. `failed` is the mechanism breaking.
+        if all(b.status == "failed" for b in branches):
+            return "failed"
         measured = any(b.scores for b in branches)
         return "succeeded" if measured else "failed"
 

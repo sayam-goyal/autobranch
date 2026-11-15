@@ -453,3 +453,39 @@ def test_run_record_to_dict_covers_every_field():
     assert declared == serialised, (
         f"to_dict() drops {sorted(declared - serialised)}"
     )
+
+
+def test_a_run_whose_branches_all_crashed_is_not_a_success():
+    """A measurement does not undo a crash.
+
+    A grpo_full branch trained for two and a half hours, crashed on its first
+    `evaluate` call, and the run reported `succeeded` -- because a score was
+    present. That score had been recorded from outside the branch by an
+    independent evaluation; the search itself produced nothing and died.
+    `succeeded` is the most misleading summary available for that.
+    """
+    reg = Registry(backend=MemoryBackend())
+    reg.create_run(env_name="e", objective={"name": "o", "direction": "maximize"},
+                   run_id="run-x")
+    reg.put_branch("run-x", BranchRecord(branch_id="b0", parent_id=None, depth=0,
+                                         status="running", reward_config={}))
+    reg.append_score("run-x", "b0", step=10, score=0.75)
+    reg.update_branch("run-x", "b0", status="failed")
+
+    assert reg.get_run("run-x").state == "failed"
+
+
+def test_abandonment_is_not_failure():
+    """`abandoned` is the search deciding a line is not worth more budget --
+    the mechanism working. Treating it as a crash would mark every healthy
+    pruning run as failed."""
+    reg = Registry(backend=MemoryBackend())
+    reg.create_run(env_name="e", objective={"name": "o", "direction": "maximize"},
+                   run_id="run-y")
+    for bid, status in (("b0", "abandoned"), ("b0.1", "succeeded")):
+        reg.put_branch("run-y", BranchRecord(branch_id=bid, parent_id=None, depth=0,
+                                             status="running", reward_config={}))
+        reg.append_score("run-y", bid, step=10, score=0.5)
+        reg.update_branch("run-y", bid, status=status)
+
+    assert reg.get_run("run-y").state == "succeeded"

@@ -1623,3 +1623,39 @@ def test_the_first_call_step_ceiling_is_not_inflated():
     assert runner._cap_steps(10**9, seconds_left_now=10**6) == DEFAULT_TRAIN_STEPS
     # A smaller request is still honoured.
     assert runner._cap_steps(500, seconds_left_now=10**6) == 500
+
+
+def test_a_vision_policy_can_actually_be_scored():
+    """`objective.evaluate` records `policy.arch`, so a policy without one
+    cannot be evaluated at all.
+
+    LoraPolicy always had it; VisionActionPolicy did not, and nothing caught
+    that because the attribute is only touched on the *scoring* path. A
+    grpo_full branch trained for two and a half hours, called evaluate once,
+    and died on AttributeError -- having produced no score and with no way to
+    ever produce one.
+    """
+    import inspect
+    import types
+
+    from autobranch import objective
+    from autobranch.lm_policy import ActionVocab, VisionActionPolicy
+
+    # The evaluator really does read it.
+    assert "policy.arch" in inspect.getsource(objective.evaluate)
+
+    tok = types.SimpleNamespace(padding_side="right", pad_token=None, eos_token="<eos>")
+    vocab = ActionVocab(labels=("0", "1", "2"), token_ids=(10, 11, 12))
+    policy = VisionActionPolicy(
+        model=None,
+        processor=types.SimpleNamespace(tokenizer=tok),
+        vocab=vocab,
+        action_names=("Wait", "Jab", "Hadouken"),
+    )
+
+    assert policy.arch["kind"] == "lm_full_discrete"
+    assert policy.arch["n_actions"] == 3
+    # The duck type an evaluator relies on, in full.
+    for attr in ("arch", "reseed", "deterministic"):
+        assert hasattr(policy, attr), attr
+    assert callable(policy)
