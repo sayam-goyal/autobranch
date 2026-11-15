@@ -163,15 +163,23 @@ class FullHyper:
     #: default so his configuration is reachable, not imposed: the reward DSL
     #: owns shaping, this only sets the return's horizon.
     discount_half_life_frames: float = 3600.0
-    #: Collection is ~80% of an iteration's wall clock -- 600 decisions at the
-    #: measured ~1.0 s each dominated the 772 s first iteration -- so this is
-    #: the knob that buys gradient steps. 400 rather than 600 because the first
-    #: real collection produced 6 round wins across 8 lanes at 600, i.e. a round
-    #: resolves in roughly 800 lane-decisions, so 400 still lands outcomes in
-    #: the window while cutting ~3.5 minutes per iteration. Going much lower
-    #: would leave only shaping in the signal, and shaping is not what the
-    #: objective counts.
-    max_decisions_per_match: int = 400
+    #: 600, measured both ways. At 600 a collection produced 6 round wins
+    #: across 8 lanes; at 400 it produced **zero**, and that is the whole
+    #: reason this is not tuned lower to buy gradient steps.
+    #:
+    #: The mistake worth recording: 6 rounds over 8x600 lane-decisions reads as
+    #: "one round per 800 lane-decisions", which invites treating it as a rate
+    #: and scaling it down. Round length is a *threshold*, not a rate -- a
+    #: round takes some minimum number of decisions in a single lane to reach a
+    #: KO or the clock, and below that no lane finishes one no matter how many
+    #: lanes there are. 400 was below it.
+    #:
+    #: A collection with no round outcomes trains on shaping alone: round_won
+    #: and round_lost are the only terms tied to the objective, and they never
+    #: fire. Worse, the agent sees rounds_won 0 in its metrics and may rewrite
+    #: a perfectly good reward in response to an artifact of the collection
+    #: window -- which corrupts the search rather than just slowing it.
+    max_decisions_per_match: int = 600
     grad_checkpointing: bool = True
     device_map: str = ""  # "" = single device; "auto" splits layers across GPUs
     dtype: str = "bfloat16"
@@ -631,6 +639,22 @@ def train(
                     "step, so there is nothing to learn from"
                 )
 
+            # Zero round outcomes means the collection window is shorter than a
+            # round, so the only objective-aligned terms in the reward
+            # contributed nothing and this iteration learned from shaping
+            # alone. Said out loud because the metric that reveals it
+            # (rounds_won 0) looks like a reward problem and is a window
+            # problem, and an agent cannot tell the difference.
+            if totals["rounds_won"] == 0 and totals["rounds_lost"] == 0:
+                print(
+                    f"WARNING: iteration {iteration} saw no round outcomes in "
+                    f"{totals['decisions']} decisions "
+                    f"({hyp.max_decisions_per_match} per lane). round_won/round_lost "
+                    f"contributed nothing, so this update is shaping-only. Raise "
+                    f"max_decisions_per_match above one round's length.",
+                    flush=True,
+                )
+
             advantages, stats = group_relative_advantages(
                 [d.advantage for d in decisions], [d.group for d in decisions]
             )
@@ -681,6 +705,8 @@ def train(
                 "damage_dealt_per_decision": totals["damage_dealt"] / max(1, totals["decisions"]),
                 "damage_taken_per_decision": totals["damage_taken"] / max(1, totals["decisions"]),
                 "rounds_won": totals["rounds_won"],
+                "shaping_only": bool(totals["rounds_won"] == 0
+                                     and totals["rounds_lost"] == 0),
                 "rounds_lost": totals["rounds_lost"],
                 "reward_fingerprint": fingerprint,
                 "wall_seconds": round(time.time() - started, 1),
