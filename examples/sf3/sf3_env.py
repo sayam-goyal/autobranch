@@ -113,13 +113,26 @@ def emulator_image():
     an 8B model, the emulator needs MAME and 2 CPUs. Putting MAME in the
     trainer image would add nothing to the GPU container and putting torch in
     the emulator image would make every lane pay a multi-GB pull.
+
+    The package list and the three environment variables are copied from the
+    predecessor project's working image rather than derived. That is deliberate:
+    the first attempt here installed the SDL runtime libraries, which looks like
+    the right answer and fails with `libGL.so.1: cannot open shared object
+    file`, because MAME only avoids needing a GL context at all once
+    `SDL_VIDEODRIVER=dummy` is set. Headless emulator images are a well-known
+    tar pit and this one was already measured against the real ROM.
     """
     import modal
 
     bundle = os.path.dirname(os.path.abspath(__file__))
     return (
-        modal.Image.debian_slim(python_version="3.11")
-        .apt_install("libsdl2-2.0-0", "libsdl2-ttf-2.0-0", "libfontconfig1", "libxinerama1")
+        modal.Image.debian_slim(python_version="3.12")
+        .apt_install("ffmpeg", "libturbojpeg-dev")
+        .env({
+            "SDL_VIDEODRIVER": "dummy",
+            "SDL_AUDIODRIVER": "dummy",
+            "XDG_RUNTIME_DIR": "/tmp",
+        })
         .uv_pip_install("MAMEToolkit==1.1.0", "numpy==2.2.6", "pillow==11.3.0")
         .add_local_dir(bundle, "/bundle", copy=True)
     )

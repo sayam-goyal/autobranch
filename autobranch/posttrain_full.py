@@ -73,6 +73,28 @@ PROMPT_VERSION = 1
 
 HF_EXPORT_DIRNAME = "hf"
 
+
+def durable_root() -> Path:
+    """Volume-backed directory for things that must outlive the sandbox.
+
+    `/workspace` is sandbox-local -- only `/data` comes from the Volume -- and
+    this project has already paid for forgetting that once, when checkpoints
+    written by the trainer died with their branch and the framework's
+    deliverable was the one thing it did not keep.
+
+    For a full fine-tune the stakes are higher in both directions. The HF
+    export *is* the trained model, 16 GiB of it, so losing it loses the run;
+    and putting 16 GiB inside `/workspace` would also make every fork
+    `snapshot_directory` that much, turning the cheap branch primitive into the
+    most expensive thing in the system. So the export and the metrics live on
+    the Volume, keyed by run and branch, and the small torch record stays in
+    the workspace where fork inheritance expects it.
+    """
+    root = Path(os.environ.get("AUTOBRANCH_DATA_ROOT", "/data"))
+    run = os.environ.get("AUTOBRANCH_RUN_ID", "local")
+    branch = os.environ.get("AUTOBRANCH_BRANCH_ID", "b0")
+    return root / "runs" / run / branch
+
 REQUIRED_PIP = (
     ("torch", "torch>=2.2"),
     ("transformers", "transformers>=4.57"),
@@ -94,8 +116,29 @@ class FullHyper:
 
     lr: float = 1e-6
     group_size: int = 8
-    groups_per_iteration: int = 2
-    micro_batch_size: int = 1
+    #: One collection per update. Measured: a lane steps in 0.25 s and lanes
+    #: run concurrently, so a 600-decision collection costs ~150 s of wall
+    #: clock no matter how many lanes there are. Two collections per update
+    #: would double that for a baseline the batch already estimates from eight
+    #: concurrent matches, and halve the number of gradient steps a fixed
+    #: deadline buys.
+    groups_per_iteration: int = 1
+    #: Measured, not guessed. probe_full_ft.py saw 2.93 s for a single-sample
+    #: forward+backward+step with 30 GiB of headroom left, so a batch of one
+    #: would spend 78 minutes updating on a 1600-decision iteration. Prompts
+    #: here are ~104 tokens, so 8 fit comfortably in that headroom.
+    micro_batch_size: int = 8
+    #: Train on a random subset of the decisions a collection produced. The
+    #: predecessor project tested this knob explicitly; the reason it is on by
+    #: default is that collection is cheap relative to the update once the
+    #: emulator lanes run concurrently, so an iteration otherwise spends almost
+    #: all of its wall clock in backward passes over correlated samples from
+    #: the same few matches.
+    train_subsample: int = 256
+    #: Where the HF export and a mirrored metrics log go. Empty means derive it
+    #: from AUTOBRANCH_DATA_ROOT/RUN_ID/BRANCH_ID, which is what a real branch
+    #: wants; a probe or a local test passes an explicit path.
+    durable_root: str = ""
     epochs: int = 1
     clip: float = 0.2
     max_grad_norm: float = 0.5
@@ -106,7 +149,12 @@ class FullHyper:
     #: default so his configuration is reachable, not imposed: the reward DSL
     #: owns shaping, this only sets the return's horizon.
     discount_half_life_frames: float = 3600.0
-    max_decisions_per_match: int = 400
+    #: ~6.7 game frames per decision measured on the real ROM, so 600
+    #: decisions is roughly 67 s of game time -- about one round. Chosen so a
+    #: round *outcome* usually lands inside the window: a collection that
+    #: truncates before anyone wins teaches only shaping, and the whole point
+    #: of the objective is that shaping is not what counts.
+    max_decisions_per_match: int = 600
     grad_checkpointing: bool = True
     device_map: str = ""  # "" = single device; "auto" splits layers across GPUs
     dtype: str = "bfloat16"
@@ -248,7 +296,8 @@ def load_for_training(base_path: str, hyper: FullHyper):
 
 
 def collect_group(env, policy: VisionActionPolicy, compiled, hyper: FullHyper,
-                  *, group: int, rng: np.random.Generator) -> tuple[list[Decision], dict]:
+                  *, group: int, rng: np.random.Generator,
+                  progress: float = 0.0) -> tuple[list[Decision], dict]:
     """Run every lane to termination once, scoring each decision by the config.
 
     One group is one batch of concurrent matches. The group is the baseline:
@@ -275,15 +324,22 @@ def collect_group(env, policy: VisionActionPolicy, compiled, hyper: FullHyper,
         logprobs = log_softmax(action_logits, temperature=hyper.temperature)
         result = env.step(actions)
 
+        # One call for every lane, exactly as the PPO trainer composes reward:
+        # the compiled config is vectorised, and calling it per lane would both
+        # cost N times as much and give any stateful shaping term (potential,
+        # delta) a different history per lane than the trainer intends.
+        rewards = np.atleast_1d(np.asarray(
+            compiled(result.signals, progress=progress), dtype=np.float64
+        )).reshape(-1)
+        if rewards.size == 1 and lanes > 1:
+            rewards = np.repeat(rewards, lanes)
+
         for i in range(lanes):
             if not live[i]:
                 continue
             signals = {k: float(np.asarray(v).reshape(-1)[i])
                        for k, v in result.signals.items()}
-            # The reward is computed here, from declared signals and a config
-            # the search wrote. The policy never sees it and the objective
-            # never sees this code.
-            reward = float(compiled.step_reward(signals))
+            reward = float(rewards[i])
             per_lane[i].append(Decision(
                 prompt_text=texts[i],
                 frame=images[i],
@@ -469,10 +525,23 @@ def train(
     ws.mkdir(parents=True, exist_ok=True)
     metrics_path = ws / "metrics.jsonl"
     state_path = ws / "progress.json"
-    export_dir = ws / HF_EXPORT_DIRNAME
 
-    config = (reward_config if isinstance(reward_config, RewardConfig)
-              else RewardConfig.parse(reward_config, spec))
+    # Durable by default, and overridable for a probe that has no volume.
+    durable = Path(hyp.durable_root) if hyp.durable_root else durable_root()
+    try:
+        durable.mkdir(parents=True, exist_ok=True)
+        export_dir = durable / HF_EXPORT_DIRNAME
+        durable_metrics = durable / "metrics.jsonl"
+    except OSError:
+        # No volume mounted (a local test). Degrade to the workspace rather
+        # than refuse to train, but say so in the metrics so nobody later
+        # mistakes a lost export for a missing one.
+        export_dir = ws / HF_EXPORT_DIRNAME
+        durable_metrics = None
+
+    # RewardConfig is an alias for `dict[str, Any]`, not a class: the DSL's
+    # whole point is that a reward is data, so there is nothing to construct.
+    config: RewardConfig = dict(reward_config or {})
     compiled = compile_reward(config, spec)
     fingerprint = config_hash(config)
 
@@ -520,6 +589,7 @@ def train(
                 got, tot = collect_group(
                     environment, policy, compiled, hyp,
                     group=iteration * 1000 + g, rng=rng,
+                    progress=min(1.0, progress["step"] / max(1, int(steps))),
                 )
                 decisions.extend(got)
                 for k, v in tot.items():
@@ -537,6 +607,15 @@ def train(
             for d, a in zip(decisions, advantages, strict=True):
                 d.advantage = float(a)
 
+            # Subsample AFTER advantages, never before: the group is the
+            # baseline, so computing it on a subset would estimate each group's
+            # mean from fewer members and make the advantages noisier for no
+            # saving -- the expensive part is the backward pass, not the mean.
+            collected = len(decisions)
+            if hyp.train_subsample and collected > hyp.train_subsample:
+                keep = rng.choice(collected, size=hyp.train_subsample, replace=False)
+                decisions = [decisions[i] for i in sorted(int(k) for k in keep)]
+
             update: dict[str, Any] = {}
             for _ in range(max(1, hyp.epochs)):
                 update = gradient_step(
@@ -549,6 +628,7 @@ def train(
                 "step": progress["step"],
                 "iteration": iteration,
                 "decisions": totals["decisions"],
+                "decisions_trained": len(decisions),
                 "invalid_move_rate": totals["invalid"] / max(1, totals["decisions"]),
                 "damage_dealt_per_decision": totals["damage_dealt"] / max(1, totals["decisions"]),
                 "damage_taken_per_decision": totals["damage_taken"] / max(1, totals["decisions"]),
@@ -559,8 +639,15 @@ def train(
                 **{k: v for k, v in stats.items()},
                 **{k: v for k, v in update.items()},
             }
+            payload = json.dumps(line) + "\n"
             with metrics_path.open("a") as fh:
-                fh.write(json.dumps(line) + "\n")
+                fh.write(payload)
+            # Mirrored rather than moved: the workspace copy is what a fork
+            # inherits and what `resume` reads, the Volume copy is what
+            # survives the sandbox and what post-hoc analysis reads.
+            if durable_metrics is not None:
+                with durable_metrics.open("a") as fh:
+                    fh.write(payload)
             state_path.write_text(json.dumps(progress))
             save_hf_export(model, processor, export_dir)
             last = line
@@ -588,6 +675,7 @@ def train(
             # could not be served by anything but this framework.
             "policy": {},
             "hf_export_path": str(export_dir),
+            "durable_root": str(durable),
             "step": progress["step"],
             "iteration": progress["iteration"],
             "hyper": hyp.to_dict(),
@@ -600,8 +688,11 @@ def train(
     )
 
     return TrainResult(
-        steps=int(progress["step"]),
-        checkpoint=str(checkpoint),
+        steps_done=int(progress["step"]),
+        checkpoint_path=str(checkpoint),
         metrics=last,
-        metrics_path=str(metrics_path),
+        wall_seconds=round(time.time() - started, 3),
+        iterations=int(progress["iteration"]),
+        workspace=str(ws),
+        reward_fingerprint=fingerprint,
     )
