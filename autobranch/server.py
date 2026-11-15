@@ -291,12 +291,56 @@ def find_manifest(root: str) -> str | None:
     return None
 
 
+#: Distributions whose import name is not their package name. Guessing by
+#: normalising hyphens covers most of PyPI and silently fails for exactly the
+#: ones a bundle is most likely to declare: `pillow` imports as `PIL`, which is
+#: what rejected the first real SF3 submission for a dependency its manifest
+#: had correctly declared.
+_MODULE_ALIASES = {
+    "pillow": "PIL",
+    "pillow_simd": "PIL",
+    "opencv_python": "cv2",
+    "opencv_python_headless": "cv2",
+    "scikit_learn": "sklearn",
+    "scikit_image": "skimage",
+    "pyyaml": "yaml",
+    "python_dateutil": "dateutil",
+    "protobuf": "google",
+    "attrs": "attr",
+    "beautifulsoup4": "bs4",
+    "msgpack_python": "msgpack",
+    "hugging_face_hub": "huggingface_hub",
+    "mametoolkit": "MAMEToolkit",
+}
+
+
 def _dist_to_module(requirement: str) -> str:
     """The module name a pip requirement most likely provides."""
     out = requirement.strip().lower()
     for sep in ("[", "==", ">=", "<=", "~=", "!=", ">", "<", ";", " "):
         out = out.split(sep, 1)[0]
-    return out.strip().replace("-", "_")
+    out = out.strip().replace("-", "_")
+    return _MODULE_ALIASES.get(out, out)
+
+
+_MISSING_MODULE_RE = re.compile(r"No module named '([^']+)'")
+
+
+def _missing_declared(problems: Iterable[str], declared: set[str]) -> set[str]:
+    """Declared dependencies that a validation failure blamed a missing import on.
+
+    Returns the modules, so the caller can say which ones deferred validation
+    rather than reporting "something was missing". Only names the manifest
+    actually declared count: a genuinely undeclared import is still the
+    submitter's bug and must stay blocking.
+    """
+    out: set[str] = set()
+    for problem in problems:
+        for match in _MISSING_MODULE_RE.finditer(str(problem)):
+            root = match.group(1).split(".")[0]
+            if root in declared:
+                out.add(root)
+    return out
 
 
 def check_env(spec: EnvironmentSpec, bundle_dir: str) -> tuple[list[str], list[str]]:
@@ -340,6 +384,18 @@ def check_env(spec: EnvironmentSpec, bundle_dir: str) -> tuple[list[str], list[s
             found = validate_env(env, spec)
         except Exception as exc:  # noqa: BLE001 - a validator crash is still a bad bundle
             return [f"validate_env crashed on this environment: {type(exc).__name__}: {exc}"], []
+
+        # The same deferral as above, for a dependency imported lazily rather
+        # than at module scope. An environment that imports PIL inside the
+        # function that decodes a frame constructs perfectly well here and then
+        # fails on reset, so checking only `load_env` catches the eager case and
+        # rejects the lazy one -- for a dependency the manifest declared.
+        deferred = _missing_declared(found, declared)
+        if deferred:
+            return [], [
+                f"environment not stepped here (needs {', '.join(sorted(deferred))}, declared "
+                "in image.pip); the branch container will"
+            ]
         return blocking(found), [p for p in found if p.startswith(ADVISORY)]
     finally:
         close = getattr(env, "close", None)

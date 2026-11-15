@@ -578,3 +578,51 @@ def test_the_frontend_requests_artifact_files_by_basename():
     assert "encodeURIComponent(file.name)" not in source, (
         "encoding the full name percent-encodes the slash and matches no route"
     )
+
+
+def test_a_declared_dependency_imported_lazily_defers_validation():
+    """A bundle must not be rejected for a dependency it correctly declared.
+
+    The web container is slim, so an environment that needs pillow or torch
+    cannot be stepped there. `load_env` failures already deferred, but an
+    environment that imports its dependency *inside* the function that needs it
+    -- as decoding a frame does -- constructs fine and fails on reset, inside
+    the validator. That rejected the first real SF3 submission for `PIL`, which
+    its manifest declared as `pillow`.
+
+    Two things are being pinned: the alias (pillow imports as PIL, and
+    normalising hyphens would never find that), and that an *undeclared* import
+    stays blocking, because that one really is the submitter's bug.
+    """
+    declared = {server._dist_to_module(p) for p in ("pillow==11.3.0", "torch==2.8.0")}
+    assert "PIL" in declared, declared
+
+    lazy = ["env.reset(seed=0) raised ModuleNotFoundError: No module named 'PIL'"]
+    assert server._missing_declared(lazy, declared) == {"PIL"}
+
+    undeclared = ["env.reset(seed=0) raised ModuleNotFoundError: No module named 'scipy'"]
+    assert server._missing_declared(undeclared, declared) == set()
+
+    # A submodule still resolves to its root package.
+    nested = ["step 0: env.step raised ModuleNotFoundError: No module named 'PIL.Image'"]
+    assert server._missing_declared(nested, declared) == {"PIL"}
+
+
+def test_the_module_alias_table_covers_the_usual_offenders():
+    """Distributions whose import name is not their package name.
+
+    Each of these would otherwise be guessed wrong by hyphen-normalisation
+    alone, and every one of them is something a real bundle declares.
+    """
+    cases = {
+        "pillow==11.3.0": "PIL",
+        "opencv-python>=4.9": "cv2",
+        "scikit-learn": "sklearn",
+        "pyyaml==6.0.2": "yaml",
+        "beautifulsoup4": "bs4",
+        "MAMEToolkit==1.1.0": "MAMEToolkit",
+        # and a normal one, unchanged
+        "numpy>=1.26": "numpy",
+    }
+    for requirement, module in cases.items():
+        assert server._dist_to_module(requirement) == module, requirement
