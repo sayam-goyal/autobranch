@@ -442,6 +442,46 @@ def cli_submit(
     print(f"status: modal run app.py::cli_status --run-id {result['run_id']}")
 
 
+
+@app.function(
+    image=WEB_IMAGE,
+    volumes=VOLUMES,
+    secrets=[kimi_secret()],
+    timeout=60 * 30,
+)
+def restart_run(run_id: str) -> dict:
+    """Relaunch a run's root branch in place, resuming from the Volume.
+
+    Runs here rather than locally because `launch_root` calls
+    `ensure_runtime_on_volume`, which writes the framework to `/data` -- a
+    path that only exists inside a Modal container. `autobranch.supervise`
+    has the same constraint for the same reason; this is the entry point that
+    satisfies it from a laptop.
+
+    The point of restarting *in place* is that `grpo_full` resumes: same run
+    id means the same durable root, so the branch loads its own HF export and
+    continues from the step it reached instead of starting over. That matters
+    after a crash late in a run -- the SF3 branch had 52,800 steps of training
+    behind it when it died on its first evaluate call.
+    """
+    from autobranch.supervise import restart
+
+    return restart(run_id)
+
+
+@app.local_entrypoint()
+def cli_restart(run_id: str):
+    """Relaunch a dead run without losing its training.
+
+        modal run app.py::cli_restart --run-id run-xxxx
+    """
+    out = restart_run.remote(run_id)
+    if not out.get("ok", True):
+        print(f"restart refused: {out.get('reason')}")
+        return
+    print(f"relaunched {run_id} in {out.get('sandbox_id')}")
+    print(f"status: modal run app.py::cli_status --run-id {run_id}")
+
 @app.local_entrypoint()
 def cli_status(run_id: str, events: int = 12):
     """Poll a run's real state.

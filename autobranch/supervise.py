@@ -96,7 +96,15 @@ def check(run_id: str) -> dict[str, Any]:
 
 
 def restart(run_id: str) -> dict[str, Any]:
-    """Relaunch the root of a dead run, in place, resuming from the Volume."""
+    """Relaunch the root of a dead run, in place, resuming from the Volume.
+
+    **Runs inside Modal only.** `launch_root` calls
+    `ensure_runtime_on_volume`, which publishes the framework to `/data`, and
+    that path is a read-only mount outside a container -- calling this from a
+    laptop fails with `OSError: Read-only file system: '/data'`, which reads
+    like a permissions problem and is a location problem. Use
+    `modal run app.py::cli_restart --run-id ...`, or the deployed supervisor.
+    """
     from autobranch.forking import launch_root
     from autobranch.registry import Registry
     from autobranch.spec import EnvironmentSpec
