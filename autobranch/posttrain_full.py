@@ -55,6 +55,7 @@ from autobranch.lm_policy import (
     _import_or_explain,
     build_action_vocab,
     ensure_base_model,
+    prepare_vision_processor,
     log_softmax,
     restrict_logits,
     sample_action_indices,
@@ -267,7 +268,9 @@ def load_for_training(base_path: str, hyper: FullHyper):
     transformers = _import_or_explain("transformers", "transformers>=4.57")
     _import_or_explain("PIL", "pillow>=10")
 
-    processor = transformers.AutoProcessor.from_pretrained(base_path)
+    processor = prepare_vision_processor(
+        transformers.AutoProcessor.from_pretrained(base_path)
+    )
     model_cls = getattr(transformers, "Qwen3VLForConditionalGeneration", None)
     if model_cls is None:
         model_cls = transformers.AutoModelForImageTextToText
@@ -448,7 +451,8 @@ def gradient_step(model, processor, optimizer, vocab: ActionVocab,
 
 
 def arch_record(spec: EnvironmentSpec, vocab: ActionVocab, hyper: FullHyper,
-                *, base_model: str, base_model_path: str, export: str) -> dict[str, Any]:
+                *, base_model: str, base_model_path: str, export: str,
+                action_names: Sequence[str] = ()) -> dict[str, Any]:
     """Everything needed to rebuild this policy, travelling with the weights."""
     return {
         "kind": "lm_full_discrete",
@@ -464,6 +468,9 @@ def arch_record(spec: EnvironmentSpec, vocab: ActionVocab, hyper: FullHyper,
             "kind": "vision_chat",
             "env_name": spec.name,
             "labels": [l.strip() for l in vocab.labels],
+            # Without these the evaluator would build a menu-less prompt and
+            # measure a different policy than the one that was trained.
+            "action_names": list(action_names or ()),
         },
         "dtype": str(hyper.dtype),
         "temperature": float(hyper.temperature),
@@ -568,11 +575,18 @@ def train(
     vocab = build_action_vocab(
         processor.tokenizer, int(spec.policy.n_actions or 0), model_name=base_model
     )
+    # `load_env` takes the entrypoint string, not the spec: it is the bundle's
+    # "module:callable" and the search path is the bundle root.
     environment = env if env is not None else load_env(
-        spec, search_path=search_path, n_envs=hyp.group_size, seed=seed
+        spec.entrypoint, search_path=search_path,
+        n_envs=hyp.group_size, seed=seed,
+        difficulty=int(spec.objective.budget.get("difficulty", 8)),
     )
     policy = VisionActionPolicy(
-        model, processor, vocab, device=device, temperature=hyp.temperature
+        model, processor, vocab, device=device, temperature=hyp.temperature,
+        # The environment owns the action table, so it owns the names. Passing
+        # them through is what puts the menu in the prompt.
+        action_names=tuple(getattr(environment, "action_names", ()) or ()),
     )
 
     rng = np.random.default_rng((seed * 1_000_003 + progress["iteration"]) & 0x7FFFFFFF)
@@ -617,10 +631,28 @@ def train(
                 decisions = [decisions[i] for i in sorted(int(k) for k in keep)]
 
             update: dict[str, Any] = {}
-            for _ in range(max(1, hyp.epochs)):
+            for epoch in range(max(1, hyp.epochs)):
                 update = gradient_step(
                     model, processor, optimizer, vocab, decisions, hyp, device=device
                 )
+                # On the first epoch the weights have not moved since
+                # collection, so the importance ratio must be 1. Anything else
+                # means the two forwards disagree about what they are scoring
+                # -- which is what right-padding did, by reading the action
+                # logits out of a PAD position at a width that depended on the
+                # batch. Checked rather than trusted, because the gradient
+                # still looked perfectly healthy while meaning nothing.
+                if epoch == 0:
+                    drift = abs(float(update.get("ratio_mean", 1.0)) - 1.0)
+                    update["first_epoch_ratio_drift"] = drift
+                    if drift > 0.05:
+                        print(
+                            f"WARNING: first-epoch importance ratio is "
+                            f"{update['ratio_mean']:.3f}, expected 1.000. Collection and "
+                            f"update are not scoring the same thing; the gradient is not "
+                            f"trustworthy. Check the processor's padding side.",
+                            flush=True,
+                        )
 
             progress["step"] += totals["decisions"]
             progress["iteration"] = iteration
@@ -669,6 +701,7 @@ def train(
                 spec, vocab, hyp,
                 base_model=base_model, base_model_path=base_path,
                 export=HF_EXPORT_DIRNAME,
+                action_names=policy.action_names,
             ),
             # The weights live in the HF export beside this file, not inline: a
             # 16 GiB tensor dict inside a .pt would double the checkpoint and

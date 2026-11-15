@@ -736,7 +736,7 @@ class VisionActionPolicy:
     def __init__(self, model, processor, vocab: ActionVocab, *, device: str = "cuda",
                  temperature: float = 1.0, action_names: Sequence[str] = ()) -> None:
         self.model = model
-        self.processor = processor
+        self.processor = prepare_vision_processor(processor)
         self.vocab = vocab
         self.device = device
         self.temperature = float(temperature)
@@ -747,10 +747,33 @@ class VisionActionPolicy:
     def reseed(self, seed: int) -> None:
         self._rng = np.random.default_rng(int(seed) & 0x7FFFFFFF)
 
+    def menu(self) -> str:
+        """`label = move name`, once, as a stable prefix.
+
+        Load-bearing rather than decorative. The action head samples over the
+        vocabulary's token ids, so without this the policy is choosing among 40
+        unlabeled single characters with no way to know that one of them means
+        Hadouken -- it could only learn the mapping by trial, which throws away
+        everything the base model already knows about Street Fighter. The
+        reproduction target shows the whole menu for the same reason.
+
+        Emitted first and identically every step so it is a shared prefix
+        across every lane and every decision, which is the cheapest thing a
+        prompt this repetitive can be.
+        """
+        if not self.action_names:
+            return ""
+        pairs = [
+            f"{label.strip()}={name}"
+            for label, name in zip(self.vocab.labels, self.action_names)
+        ]
+        return "moves: " + "  ".join(pairs)
+
     def prompts(self, obs: dict) -> tuple[list[str], list[Any]]:
         """Build one chat prompt per lane, with the frame as an image part."""
         frames = list(obs["frames"])
         texts = list(obs["text"])
+        menu = self.menu()
         from PIL import Image
 
         images = [
@@ -759,9 +782,10 @@ class VisionActionPolicy:
         ]
         built = []
         for text in texts:
+            body = f"{menu}\n{text}" if menu else text
             messages = [{
                 "role": "user",
-                "content": [{"type": "image"}, {"type": "text", "text": text}],
+                "content": [{"type": "image"}, {"type": "text", "text": body}],
             }]
             built.append(self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
@@ -786,6 +810,39 @@ class VisionActionPolicy:
             action_logits, self._rng,
             temperature=self.temperature, greedy=self.deterministic,
         )
+
+
+def prepare_vision_processor(processor: Any) -> Any:
+    """Left-pad, or the policy reads its logits out of padding.
+
+    The action head takes `logits[:, -1, :]`. Under the processor's default
+    right padding, that position is a PAD token for every row shorter than the
+    longest in the batch -- so the sampled action comes from padding, and it
+    comes from a *different* position depending on what else happened to be in
+    the batch.
+
+    The symptom is specific and was caught by it: on the first epoch the policy
+    has not changed, so the importance ratio `exp(new_logp - old_logp)` must be
+    exactly 1.0. It measured 0.377, because collection batched eight lanes and
+    the update batched four, padding each to a different width. The gradient was
+    being computed from a ratio that meant nothing.
+
+    `posttrain._prepare_tokenizer` does this for the text path; a VL processor
+    keeps its tokenizer one level down, which is why it was missed.
+    """
+    tokenizer = getattr(processor, "tokenizer", processor)
+    tokenizer.padding_side = "left"
+    if getattr(tokenizer, "pad_token", None) is None:
+        if getattr(tokenizer, "eos_token", None) is None:
+            raise PostTrainError(
+                "this processor's tokenizer has neither a pad token nor an eos token, so a "
+                "batch of prompts of different lengths cannot be padded"
+            )
+        tokenizer.pad_token = tokenizer.eos_token
+    # Some processors cache a padding side of their own.
+    if hasattr(processor, "padding_side"):
+        processor.padding_side = "left"
+    return processor
 
 
 def load_full_policy(
@@ -835,7 +892,9 @@ def load_full_policy(
             "record and the weights have been separated"
         )
 
-    processor = transformers.AutoProcessor.from_pretrained(str(export))
+    processor = prepare_vision_processor(
+        transformers.AutoProcessor.from_pretrained(str(export))
+    )
     model_cls = getattr(transformers, "Qwen3VLForConditionalGeneration", None)
     if model_cls is None:
         model_cls = transformers.AutoModelForImageTextToText

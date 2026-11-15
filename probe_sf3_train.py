@@ -115,7 +115,7 @@ def probe(lanes: int = 2, decisions: int = 24, subsample: int = 16) -> dict:
             "micro_batch_size": 4,
             "durable_root": "/data/probe-durable",
         },
-        search_path=["/bundle"],
+        search_path="/bundle",
     )
     report["train_s"] = round(time.time() - t0, 1)
     report["steps"] = result.steps_done
