@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>autobranch</title>
-<meta name="description" content="autobranch — a generalized RL framework on Modal. Hand it an environment and a sentence of intent; it searches the reward-function space and hands back trained weights." />
+<meta name="description" content="autobranch — a generalized RL framework on Modal." />
 <meta name="color-scheme" content="light dark" />
 <!-- The ASGI app serves exactly three assets; declaring an empty icon keeps the
      browser from asking for a /favicon.ico that is not there. -->
@@ -62,12 +62,7 @@
 <template id="tpl-runs">
   <section class="page page-runs">
     <div class="page-head">
-      <p class="eyebrow">Training runs</p>
-      <h1>Everything you have submitted.</h1>
-      <p class="lede">
-        One row per run. A run owns a tree of Modal sandboxes, each training a different
-        reward config against the same untouchable objective. Open a row to watch its tree.
-      </p>
+      <h1>Training Runs</h1>
     </div>
 
     <div class="summary">
@@ -130,13 +125,7 @@
 <template id="tpl-new">
   <section class="page page-new">
     <div class="page-head">
-      <p class="eyebrow">New run</p>
-      <h1>Hand it an environment and a sentence of intent.</h1>
-      <p class="lede">
-        autobranch reads your bundle's manifest, writes a reward config, trains it, and scores it
-        with the evaluator you declared — which no agent can touch. Promising branches fork like
-        git worktrees; lines that stop paying abandon themselves.
-      </p>
+      <h1>New Run</h1>
     </div>
 
     <form class="form" id="new-run-form" novalidate>
@@ -179,34 +168,9 @@
         <p class="field-problem mono" data-problem="bundle" role="alert" hidden></p>
       </fieldset>
 
-      <!-- ── the parse preview: what the system understood ── -->
-      <section class="block preflight">
-        <div class="block-head">
-          <p class="eyebrow">What the system understood</p>
-          <span class="badge" data-f="pf-state" hidden></span>
-        </div>
-        <p class="hint">
-          The manifest is parsed in the browser before anything is submitted, so you can read the
-          contract the way the agents will: the signals they may compose a reward from, the
-          objective they may never touch, and the hardware the run will ask Modal for. The server
-          re-validates the same bundle on submit and its answer wins.
-        </p>
-
-        <div class="pf-placeholder" data-f="pf-placeholder">
-          <p class="mono">No manifest parsed yet.</p>
-          <p class="hint">
-            Drop a <code class="mono">.zip</code> above, or
-            <button class="btn-link" type="button" data-f="pf-example">preview the gridworld reference manifest</button>.
-            A git URL is resolved server-side, so it is parsed at submit instead.
-          </p>
-        </div>
-
-        <div class="pf-body" data-f="pf-body" hidden></div>
-      </section>
 
       <fieldset class="block">
         <legend class="eyebrow">Constraints</legend>
-        <p class="hint">Free text. The master agent parses these before it writes the first reward config — they bound the search, the hardware, and the spend.</p>
         <label class="label visually-hidden" for="constraints">Constraints</label>
         <textarea class="field textarea mono" id="constraints" name="constraints" rows="8" spellcheck="false" placeholder="must posttrain Qwen/Qwen3-4B
 stay under $50
@@ -217,7 +181,6 @@ no GPU larger than an L40S"></textarea>
 
       <fieldset class="block">
         <legend class="eyebrow">Budget caps</legend>
-        <p class="hint">Hard ceilings, decremented centrally. A branch that exhausts its share is abandoned whether or not its agent agrees.</p>
         <div class="grid-3">
           <div class="field-row">
             <label class="label" for="budget-usd">Max spend (USD)</label>
