@@ -164,6 +164,22 @@ class FullHyper:
     #: bound on how much work a preemption can destroy. At 2 the worst case is
     #: ~25 minutes instead of ~an hour, for 8% of the wall clock rather than 4%.
     save_every: int = 2
+    #: How many step-stamped copies of the export to retain beside it.
+    #:
+    #: `save_every` bounds what a preemption destroys; this bounds what
+    #: *training itself* destroys. Every export overwrites the last one, so the
+    #: volume only ever holds the newest policy -- and in RL the newest policy
+    #: is routinely not the best one. This run measured 0.750 at step 28,800
+    #: and 0.542 at 52,800, and by the time anyone compared the two the 28,800
+    #: weights had been overwritten four times over. The better number was
+    #: real, recorded, and permanently unreproducible: nothing to re-measure,
+    #: nothing to serve, nothing to ship.
+    #:
+    #: A full checkpoint is ~16 GiB, which is why the default is small rather
+    #: than zero. Volume bytes are the cheapest thing in this system; an hour
+    #: of H100 that produced a model we then deleted is the most expensive.
+    #: 0 disables retention and restores the overwrite-only behaviour.
+    keep_checkpoints: int = 3
     #: Where the HF export and a mirrored metrics log go. Empty means derive it
     #: from AUTOBRANCH_DATA_ROOT/RUN_ID/BRANCH_ID, which is what a real branch
     #: wants; a probe or a local test passes an explicit path.
@@ -547,6 +563,61 @@ def save_hf_export(model, processor, directory: Path) -> Path:
     return directory
 
 
+def retain_checkpoint(export_dir: Path, step: int, keep: int) -> Path | None:
+    """Keep a step-stamped copy of the export, pruning the oldest.
+
+    Hard-links where the filesystem allows it, so retaining N checkpoints
+    costs N directory entries rather than N x 16 GiB; falls back to copying
+    when it does not (a FUSE-backed volume may refuse `link`). Either way the
+    copy is staged and renamed, so a half-written checkpoint never appears
+    under a name something else might load.
+
+    A directory holding a `keep.marker` is never pruned. That is how a
+    checkpoint someone has actually measured survives the retention window --
+    an evaluated step is evidence, and evidence outranks recency.
+    """
+    if keep <= 0 or step is None:
+        return None
+    import shutil
+
+    root = export_dir.parent / "checkpoints"
+    dest = root / f"step-{step}"
+    if dest.is_dir():
+        return dest
+
+    staging = root / f".staging-step-{step}-{os.getpid()}"
+    try:
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        for src in sorted(p for p in export_dir.iterdir() if p.is_file()):
+            target = staging / src.name
+            try:
+                os.link(src, target)
+            except OSError:
+                shutil.copy2(src, target)
+        os.replace(staging, dest)
+    except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
+        return None
+
+    # Prune by step, not mtime: a resumed run rewrites old steps' mtimes and
+    # would otherwise delete its newest weights first.
+    def step_of(p: Path) -> int:
+        try:
+            return int(p.name.split("-")[-1])
+        except ValueError:
+            return -1
+
+    existing = sorted(
+        (p for p in root.iterdir() if p.is_dir() and p.name.startswith("step-")),
+        key=step_of,
+    )
+    prunable = [p for p in existing if not (p / "keep.marker").is_file()]
+    for victim in prunable[: max(0, len(prunable) - keep)]:
+        shutil.rmtree(victim, ignore_errors=True)
+    return dest
+
+
 # ---------------------------------------------------------------------------
 # the trainer entry point
 # ---------------------------------------------------------------------------
@@ -782,6 +853,8 @@ def train(
             # in a way that skipping it is not.
             if hyp.save_every and iteration % hyp.save_every == 0:
                 save_hf_export(model, processor, export_dir)
+                retain_checkpoint(export_dir, progress.get("step"),
+                                  hyp.keep_checkpoints)
                 try:
                     durable_state.write_text(json.dumps(progress))
                 except OSError:
@@ -799,6 +872,7 @@ def train(
     # export would measure a policy from several iterations ago. Progress
     # follows it, for the same reason it does inside the loop.
     save_hf_export(model, processor, export_dir)
+    retain_checkpoint(export_dir, progress.get("step"), hyp.keep_checkpoints)
     try:
         durable_state.write_text(json.dumps(progress))
     except OSError:
