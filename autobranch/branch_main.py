@@ -658,7 +658,11 @@ def main(argv: list[str] | None = None) -> int:
         env=env, spec=spec, agent=agent, registry=registry,
         policy=SearchPolicy(budget, spec.objective),
         trainer=trainer, evaluator=evaluator,
-        forker=make_forker(spec=spec, budget=budget),
+        # The registry must reach the forker: it is what registers a child
+        # BEFORE the child starts. Without it the child's own loop has no
+        # record to patch and every update raises KeyError, so a forked branch
+        # trains invisibly and never appears in the tree.
+        forker=make_forker(spec=spec, budget=budget, registry=registry),
         ledger=ledger, workspace=workspace,
     )
     outcome = runner.run()

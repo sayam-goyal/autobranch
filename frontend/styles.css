@@ -249,7 +249,15 @@ code, pre, .mono { font-family: var(--font-mono); }
   display: flex;
   gap: 1.25rem;
   margin-right: auto;
+  /* A flex item will not shrink below its content width without this, which
+     is how a five-item nav pushes a 360px page sideways. */
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+
+.topnav::-webkit-scrollbar { display: none; }
+.brand, .topbar-right { flex: 0 0 auto; }
 
 .topnav a {
   font-family: var(--font-mono);
@@ -948,9 +956,14 @@ code, pre, .mono { font-family: var(--font-mono); }
   border-bottom: var(--hair) solid var(--border);
 }
 
-.detail-id { font-family: var(--font-mono); font-size: 14px; }
+/* A sandbox id is 28 characters of mono in a 360px panel that also holds a
+   badge: it has to be small and it has to be allowed to break. */
+.detail-head > div { min-width: 0; flex: 1 1 auto; }
+.detail-id { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
 .detail-id.is-abandoned { color: var(--fg-faint); text-decoration: line-through; }
-.detail-path { font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint); word-break: break-all; }
+/* `anywhere`, not `break-all`: break inside a 28-character sandbox id when
+   there is no other option, but never mid-word in a sentence. */
+.detail-path { font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint); overflow-wrap: anywhere; }
 
 .detail-section {
   padding: 0.8rem 0.9rem;
@@ -1101,7 +1114,9 @@ code, pre, .mono { font-family: var(--font-mono); }
   overflow-wrap: anywhere;
 }
 
-.now-line .dot { align-self: center; }
+/* The activity line wraps; the dot belongs beside its first line, not
+   vertically centred against the whole paragraph. */
+.now-line .dot { align-self: flex-start; margin-top: 0.42em; }
 .now-line.is-warn { color: var(--warn); }
 .now-line.is-error { color: var(--danger); }
 
@@ -1434,8 +1449,22 @@ code, pre, .mono { font-family: var(--font-mono); }
 }
 
 @media (max-width: 640px) {
-  .topbar { gap: 1rem; padding: 0 1rem; }
-  .topnav { gap: 0.85rem; }
+  /* Phone widths: brand and theme on one row, the nav on its own below, so
+     no tab is ever clipped. */
+  .topbar {
+    gap: 0.5rem 1rem;
+    padding: 0.4rem 1rem;
+    height: auto;
+    flex-wrap: wrap;
+  }
+
+  .topnav {
+    gap: 0.85rem;
+    order: 3;
+    flex: 1 0 100%;
+    margin-right: 0;
+    padding-bottom: 0.15rem;
+  }
   .view { padding: 1.75rem 1rem 3rem; }
   .footer { padding: 1rem; }
   .stats { margin-left: 0; gap: 0 1.25rem; }

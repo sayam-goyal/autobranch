@@ -233,6 +233,21 @@
     return hit;
   }
 
+  /* A `pending` branch means "sandbox starting" — but only while the run is
+     still going. On a run that failed before it ever launched, the same
+     status means the sandbox never started at all, and pulsing it as though
+     something were happening would be a lie. */
+  function isLiveBranch(run, status) {
+    return Boolean(LIVE_STATES[statusClass(status)]) &&
+      Boolean(LIVE_STATES[run && run.state]);
+  }
+
+  function statusLabel(run, status) {
+    var s = statusClass(status);
+    if (s !== "pending") { return s; }
+    return LIVE_STATES[run && run.state] ? "starting" : "never started";
+  }
+
   function statusCounts(branches) {
     var counts = {};
     (branches || []).forEach(function (b) {
@@ -303,7 +318,10 @@
      shapes read better rewritten. Anything unrecognised passes through
      untouched — a message we do not understand is still the truth. */
   function humanizeEvent(message, branchId) {
-    var text = String(message == null ? "" : message).trim();
+    /* A branch that dies logs its traceback, newlines and all. An activity
+       line is one line, so whitespace is collapsed here — the untouched
+       message is still in the feed. */
+    var text = String(message == null ? "" : message).replace(/\s+/g, " ").trim();
     text = text.replace(/^root branch\s+/, "");
     if (branchId) {
       text = text.replace(new RegExp("^branch\\s+" + escapeRe(branchId) + "\\b[:,]?\\s*"), "");
@@ -376,8 +394,11 @@
         level: newest.level === "warn" || newest.level === "error" ? newest.level : "info"
       };
     }
+    var s = statusClass(branch.status);
     return {
-      text: IDLE_ACTIVITY[statusClass(branch.status)] || "no activity recorded",
+      text: (s === "pending" && !LIVE_STATES[run && run.state])
+        ? "sandbox never started"
+        : (IDLE_ACTIVITY[s] || "no activity recorded"),
       since: null,
       source: "status",
       level: "info"
@@ -1111,10 +1132,13 @@
     node.textContent = "api: " + (API_BASE || "same-origin");
   }
 
-  function statusBadge(status) {
+  /* `live` is passed explicitly where the caller knows better than the status
+     alone does — a pending branch inside a finished run is not live. */
+  function statusBadge(status, live, label) {
     var s = statusClass(status);
-    var live = LIVE_STATES[s] ? " pulse" : "";
-    return '<span class="badge badge-' + s + '"><span class="dot st-' + s + live + '"></span>' + esc(s) + "</span>";
+    var moving = live === undefined ? Boolean(LIVE_STATES[s]) : Boolean(live);
+    return '<span class="badge badge-' + s + '"><span class="dot st-' + s +
+      (moving ? " pulse" : "") + '"></span>' + esc(label || s) + "</span>";
   }
 
   function mount(node) {
@@ -1140,12 +1164,19 @@
      survive them. */
   function withFocusPreserved(container, render) {
     var active = document.activeElement;
-    var key = active && container.contains(active) ? active.getAttribute("data-branch") : null;
+    var inside = active && container.contains(active);
+    var attr = null;
+    var key = null;
+    if (inside) {
+      attr = active.hasAttribute("data-branch") ? "data-branch"
+        : (active.hasAttribute("data-run") ? "data-run" : null);
+      key = attr ? active.getAttribute(attr) : null;
+    }
     var scrolled = container.scrollTop;
     render();
     if (container.scrollTop !== scrolled) { container.scrollTop = scrolled; }
     if (!key) { return; }
-    var again = container.querySelector('[data-branch="' + key.replace(/["\\]/g, "") + '"]');
+    var again = container.querySelector("[" + attr + '="' + key.replace(/["\\]/g, "") + '"]');
     if (again && typeof again.focus === "function") { again.focus(); }
   }
 
@@ -1767,9 +1798,9 @@
           } else {
             var lo = Number(entry.range[0]);
             var hi = Number(entry.range[1]);
+            signal.range = [entry.range[0], entry.range[1]];
             if (isNaN(lo) || isNaN(hi)) { fail(where + ".range", "expected two numbers"); }
             else if (lo > hi) { fail(where + ".range", "lo " + lo + " exceeds hi " + hi); }
-            else { signal.range = [lo, hi]; }
           }
         }
         if (signal.name && seen[signal.name]) {
@@ -1843,13 +1874,17 @@
       var res = raw.resources;
       var gpu = res.gpu;
       spec.resources.gpu = (gpu == null || gpu === "" || gpu === "none") ? null : String(gpu);
+      /* A value that fails validation is still shown as declared: a panel
+         that quietly displayed the default instead would be describing a run
+         that is not going to happen. */
       var cpu = res.cpu == null ? 2 : Number(res.cpu);
       var memory = res.memory == null ? 8192 : Number(res.memory);
+      spec.resources.cpu = isNaN(cpu) ? String(res.cpu) : cpu;
+      spec.resources.memory = isNaN(memory) ? String(res.memory) : memory;
       if (isNaN(cpu) || !(cpu > 0)) { fail("manifest.resources.cpu", "must be positive"); }
-      else { spec.resources.cpu = cpu; }
       if (isNaN(memory) || memory < 512) {
         fail("manifest.resources.memory", "must be at least 512 MiB");
-      } else { spec.resources.memory = memory; }
+      }
     }
 
     /* -- policy -- */
@@ -1866,8 +1901,8 @@
       }
       if (pol.n_actions != null) {
         var n = Number(pol.n_actions);
+        spec.policy.n_actions = isNaN(n) ? String(pol.n_actions) : n;
         if (isNaN(n) || n < 2) { fail("manifest.policy.n_actions", "need at least 2 actions"); }
-        else { spec.policy.n_actions = n; }
       }
       if (pol.obs_dim != null) { spec.policy.obs_dim = Number(pol.obs_dim); }
       if (pol.base_model != null) { spec.policy.base_model = String(pol.base_model); }
@@ -2052,6 +2087,7 @@
     placeholder.hidden = true;
 
     if (parsed.error) {
+      showProblems(root, [], {});
       body.hidden = false;
       body.innerHTML =
         '<div class="notice is-warn">' +
@@ -2125,7 +2161,9 @@
       '<dl class="kv-grid pf-kv">' +
       kvRow("GPU", spec.resources.gpu || "none (CPU only)", "mono") +
       kvRow("CPU", spec.resources.cpu, "mono num") +
-      kvRow("Memory", fmtBytes(spec.resources.memory * 1024 * 1024), "mono num") +
+      kvRow("Memory", typeof spec.resources.memory === "number"
+        ? fmtBytes(spec.resources.memory * 1024 * 1024)
+        : String(spec.resources.memory), "mono num") +
       kvRow("Image", spec.image.base + " · python " + spec.image.python, "mono") +
       "</dl>" +
       '<p class="pf-sub eyebrow">pip</p>' +
@@ -2411,24 +2449,25 @@
       var score = bestScoreOf(b);
       var sandbox = sandboxOf(run, b);
       var act = activityOf(run, b);
-      var live = Boolean(LIVE_STATES[s]);
+      var live = isLiveBranch(run, s);
+      var label = statusLabel(run, s);
 
       var classes = ["node", "status-" + s];
       if (abandoned) { classes.push("is-abandoned"); }
       if (best) { classes.push("is-best"); }
       if (state.selected === b.branch_id) { classes.push("is-selected"); }
 
-      var label = "sandbox " + (sandbox || "not yet created") + ", branch " + b.branch_id +
-        ", " + s + ", objective " + fmtScore(score) + ", " + act.text +
+      var aria = "sandbox " + (sandbox || "not yet created") + ", branch " + b.branch_id +
+        ", " + label + ", objective " + fmtScore(score) + ", " + act.text +
         (abandoned ? ", abandoned line" : "");
 
       var sandboxText = sandbox
         ? shortSandbox(sandbox)
-        : (s === "pending" ? "sandbox starting…" : "no sandbox id");
+        : (s === "pending" && live ? "sandbox starting…" : "no sandbox id");
 
       parts.push(
         '<g class="' + classes.join(" ") + '" tabindex="0" role="button" ' +
-        'data-branch="' + esc(b.branch_id) + '" aria-label="' + esc(label) + '">' +
+        'data-branch="' + esc(b.branch_id) + '" aria-label="' + esc(aria) + '">' +
         '<rect class="node-ring" rx="5" x="' + (n.x - 3) + '" y="' + (n.y - 3) + '" width="' + (NODE_W + 6) + '" height="' + (NODE_H + 6) + '"></rect>' +
         '<rect class="node-box" rx="3" x="' + n.x + '" y="' + n.y + '" width="' + NODE_W + '" height="' + NODE_H + '"></rect>' +
         '<line class="node-stripe stripe-' + s + '" x1="' + (n.x + 1.25) + '" y1="' + (n.y + 2) + '" x2="' + (n.x + 1.25) + '" y2="' + (n.y + NODE_H - 2) + '"></line>' +
@@ -2438,7 +2477,7 @@
 
         '<text class="node-id" x="' + (n.x + 14) + '" y="' + (n.y + 40) + '">' + esc(b.branch_id) + (abandoned ? " ✕" : "") + "</text>" +
         '<text class="node-status text-' + s + '" x="' + (n.x + NODE_W - 12) + '" y="' + (n.y + 40) + '" text-anchor="end">' +
-        esc(s === "pending" ? "STARTING" : s.toUpperCase()) + "</text>" +
+        esc(label.toUpperCase()) + "</text>" +
 
         '<text class="node-score" x="' + (n.x + 14) + '" y="' + (n.y + 62) + '">' + esc(fmtScore(score)) + "</text>" +
         '<text class="node-meta" x="' + (n.x + NODE_W - 12) + '" y="' + (n.y + 62) + '" text-anchor="end">' +
@@ -2484,11 +2523,10 @@
       return;
     }
     list.innerHTML = shown.map(function (s) {
-      var live = LIVE_STATES[s] ? " pulse" : "";
       return '<li class="chip-status st-text-' + s + '">' +
-        '<span class="dot st-' + s + live + '" aria-hidden="true"></span>' +
+        '<span class="dot st-' + s + (isLiveBranch(run, s) ? " pulse" : "") + '" aria-hidden="true"></span>' +
         '<span class="mono num">' + counts[s] + "</span>" +
-        '<span class="chip-status-label">' + esc(s === "pending" ? "starting" : s) + "</span>" +
+        '<span class="chip-status-label">' + esc(statusLabel(run, s)) + "</span>" +
         "</li>";
     }).join("");
   }
@@ -2520,7 +2558,26 @@
 
     var branch = branchById(run, state.selected);
     if (!branch) {
-      panel.innerHTML = '<p class="empty mono">branch ' + esc(state.selected) + " is no longer in the tree.</p>";
+      /* A fork is announced in the event log by its parent, and its own branch
+         record lands a poll or two later. Say so rather than implying the
+         sandbox vanished. */
+      panel.innerHTML =
+        '<div class="detail-head"><div><p class="eyebrow">Sandbox</p>' +
+        '<p class="detail-id">' + esc(state.selected) + "</p>" +
+        '<p class="detail-path">no branch record published yet</p></div></div>' +
+        '<div class="detail-section"><p class="rationale">' + esc(state.selected) +
+        " appears in the activity feed but the registry has not published its branch record yet." +
+        " Forks are announced by their parent and register themselves once their sandbox is up;" +
+        " this node will appear in the tree on one of the next refreshes.</p>" +
+        (eventsFor(run, state.selected).length
+          ? '<ol class="timeline">' + eventsFor(run, state.selected).slice(-10).reverse().map(function (e) {
+              var level = e.level === "warn" || e.level === "error" ? e.level : "info";
+              return '<li class="timeline-' + level + '">' +
+                '<span class="timeline-ts mono">' + esc(fmtClock(e.ts)) + "</span>" +
+                '<span class="timeline-msg">' + esc(humanizeEvent(e.message, state.selected)) + "</span></li>";
+            }).join("") + "</ol>"
+          : "") +
+        "</div>";
       return;
     }
 
@@ -2541,14 +2598,15 @@
       esc(sandbox || (s === "pending" ? "not created yet" : "id unknown")) + "</p>" +
       '<p class="detail-path">branch ' + esc(branch.branch_id) + " · lineage " + esc(path.join(" → ")) + "</p>" +
       "</div>" +
-      statusBadge(s) +
+      statusBadge(s, isLiveBranch(run, s), statusLabel(run, s)) +
       "</div>" +
 
       '<div class="detail-section detail-now">' +
       '<p class="eyebrow">Doing now</p>' +
-      '<p class="now-line' + (act.level === "warn" || act.level === "error" ? " is-" + act.level : "") + '">' +
-      '<span class="dot st-' + s + (LIVE_STATES[s] ? " pulse" : "") + '" aria-hidden="true"></span>' +
-      esc(act.text) + "</p>" +
+      '<p class="now-line' + (act.level === "warn" || act.level === "error" ? " is-" + act.level : "") +
+      '" title="' + esc(act.text) + '">' +
+      '<span class="dot st-' + s + (isLiveBranch(run, s) ? " pulse" : "") + '" aria-hidden="true"></span>' +
+      '<span>' + esc(truncate(act.text, 200)) + "</span></p>" +
       '<p class="detail-path">' +
       esc((act.since == null ? "no timestamp" : "since " + fmtClock(act.since) + " · " + ageText(act.since) + " ago") +
         " · " + (act.source === "sandbox"
@@ -2667,8 +2725,8 @@
         '<td class="cell-sandbox" title="' + esc(sandbox || "no sandbox id yet") + '">' +
         esc(sandbox ? shortSandbox(sandbox) : "—") + "</td>" +
         '<td class="num">' + esc(String(b.depth == null ? "—" : b.depth)) + "</td>" +
-        '<td><span class="dot st-' + s + (LIVE_STATES[s] ? " pulse" : "") + '"></span> ' +
-        esc(s === "pending" ? "starting" : s) + "</td>" +
+        '<td><span class="dot st-' + s + (isLiveBranch(run, s) ? " pulse" : "") + '"></span> ' +
+        esc(statusLabel(run, s)) + "</td>" +
         '<td class="num cell-score' + (bestId === b.branch_id ? " is-best" : "") + '">' + esc(fmtScore(bestScoreOf(b))) + "</td>" +
         '<td class="num">' + esc(fmtUsd(b.spend_usd)) + "</td>" +
         '<td class="num">' + esc(fmtTokens(b.tokens)) + "</td>" +
@@ -2747,16 +2805,17 @@
     return stale || missing;
   }
 
-  function miniDots(meta) {
+  function miniDots(meta, runState) {
     if (!meta || !meta.branches) { return '<span class="dim">—</span>'; }
+    var fakeRun = { state: runState };
     var branches = meta.branches.slice().sort(function (a, b) {
       return STATUS_ORDER[statusClass(a.status)] - STATUS_ORDER[statusClass(b.status)];
     });
     var shown = branches.slice(0, 10);
     var dots = shown.map(function (b) {
       var s = statusClass(b.status);
-      return '<span class="dot st-' + s + (LIVE_STATES[s] ? " pulse" : "") + '" title="' +
-        esc(b.branch_id + " · " + s) + '"></span>';
+      return '<span class="dot st-' + s + (isLiveBranch(fakeRun, s) ? " pulse" : "") + '" title="' +
+        esc(b.branch_id + " · " + statusLabel(fakeRun, s)) + '"></span>';
     }).join("");
     return '<span class="mini-dots">' + dots +
       (branches.length > shown.length ? '<span class="dim mono">+' + (branches.length - shown.length) + "</span>" : "") +
@@ -2815,7 +2874,7 @@
             '<td><span class="dot st-' + s + (LIVE_STATES[s] ? " pulse" : "") + '"></span> ' +
             esc(s === "pending" ? "starting" : s) + "</td>" +
             '<td class="num cell-score">' + esc(fmtScore(row.best_score)) + "</td>" +
-            '<td class="cell-sandboxes">' + miniDots(meta) + "</td>" +
+            '<td class="cell-sandboxes">' + miniDots(meta, row.state) + "</td>" +
             '<td class="num">' + esc(fmtUsd(row.spend_usd)) + "</td>" +
             '<td class="num" data-age="' + esc(String(tsToMs(row.created_at))) + '" title="' +
             esc(fmtStamp(row.created_at)) + '">' + esc(ageText(row.created_at)) + "</td>" +
@@ -3315,13 +3374,16 @@
       f("artifact-link").href = "#/artifact/" + encodeURIComponent(state.runId);
 
       if (!state.selected) {
-        /* Open on the thing worth looking at: the best branch if there is one,
-           otherwise whichever sandbox is currently doing something. */
+        /* Open on the thing worth looking at: the best branch if there is one
+           *and it is in the tree* — a fork can appear in the event log a poll
+           or two before its branch record is published — otherwise whichever
+           sandbox is currently doing something. */
         var fallback = null;
         (run.branches || []).forEach(function (b) {
           if (!fallback && LIVE_STATES[statusClass(b.status)]) { fallback = b.branch_id; }
         });
-        state.selected = (run.best && run.best.branch_id) || fallback ||
+        var bestId = run.best && run.best.branch_id;
+        state.selected = (bestId && branchById(run, bestId) ? bestId : null) || fallback ||
           ((run.branches || [])[0] || {}).branch_id || null;
       }
 

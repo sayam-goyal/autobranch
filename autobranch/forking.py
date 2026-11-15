@@ -162,10 +162,15 @@ def _fork_child(
     #    boot still appears in the tree as a failed branch rather than
     #    vanishing without trace.
     if registry is not None:
+        # Not best-effort: if the child cannot be registered, its own loop will
+        # have no record to patch and it would train invisibly. Better to
+        # refuse the fork and let the agent try again.
         try:
             registry.put_branch(parent_env.run_id, _pending_record(child_env, note))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            raise ForkError(
+                f"could not register child {child_branch_id}: {type(exc).__name__}: {exc}"
+            ) from exc
 
     ensure_runtime_on_volume()
     the_app = app or modal.App.lookup(infra.APP_NAME, create_if_missing=True)
@@ -184,6 +189,15 @@ def _fork_child(
         env=child_env.to_env(),
     )
     child.mount_image(workspace, snapshot)
+
+    # 3b. The child needs the environment's own code too. `/bundle` lives
+    #     OUTSIDE `/workspace`, so the snapshot does not carry it -- a forked
+    #     child inherited its parent's weights and then died on
+    #     `ModuleNotFoundError: No module named 'grid_env'`. Unpack it from the
+    #     volume, exactly as `launch_root` does for the root.
+    child.exec(
+        "bash", "-lc", _unpack_bundle_cmd(parent_env.run_id), timeout=300,
+    ).wait()
 
     # 4. Start the child's loop detached. We do not wait: the parent has its
     #    own line to continue, which is the entire point of a branch.
@@ -209,6 +223,24 @@ def _fork_child(
         "child_branch_id": child_branch_id,
         "sandbox_id": child.object_id,
     }
+
+
+def _unpack_bundle_cmd(run_id: str) -> str:
+    """Shell to unpack a run's bundle into /bundle inside a sandbox.
+
+    Shared by the root launch and every fork so the two cannot drift: a child
+    that inherits weights but not the environment's code fails on the first
+    train call, which is a confusing way to lose a branch.
+    """
+    from autobranch import infra
+
+    zip_path = f"{infra.DATA_ROOT}/bundles/{run_id}.zip"
+    return (
+        "mkdir -p /workspace /bundle && "
+        f"if [ -f {zip_path} ]; then "
+        f"python -c \"import zipfile; zipfile.ZipFile('{zip_path}').extractall('/bundle')\"; "
+        "else echo 'autobranch: no bundle archive on the volume' >&2; fi"
+    )
 
 
 def modal_auth_secret():
@@ -344,14 +376,7 @@ def launch_root(
         env=env.to_env(),
     )
     # The bundle lives on the volume; unpack it where the entrypoint expects it.
-    sb.exec(
-        "bash", "-lc",
-        f"mkdir -p /workspace && "
-        f"(test -f {infra.DATA_ROOT}/bundles/{run_id}.zip && "
-        f" python -c \"import zipfile,sys; zipfile.ZipFile('{infra.DATA_ROOT}/bundles/{run_id}.zip')"
-        f".extractall('/bundle')\" || true)",
-        timeout=300,
-    ).wait()
+    sb.exec("bash", "-lc", _unpack_bundle_cmd(run_id), timeout=300).wait()
     sb.exec(
         "bash", "-lc",
         "python -u -m autobranch.branch_main >> /workspace/branch.log 2>&1",
