@@ -591,3 +591,26 @@ def test_the_biller_marks_time_before_sleeping():
 
     src = inspect.getsource(branch_main.start_compute_biller)
     assert "seconds, last = now - last, now" in src, src
+
+
+def test_a_branch_records_its_own_spend_not_the_run_total():
+    """Four branches each storing the run total makes a run cost 4x what it did.
+
+    `registry._run_spend` sums branch records whenever it cannot reach the
+    ledger -- which is every off-volume reader: the local UI, the artifact,
+    any later analysis. A live four-branch run showed $62.82 against a true
+    ~$25 for exactly this reason.
+
+    It never affected the cap, because the budget guard reads
+    `ledger.total_usd()` directly and that figure was always right. It
+    affected everything a person looks at.
+    """
+    import inspect
+
+    from autobranch import branch_main
+
+    src = inspect.getsource(branch_main.BranchRunner._sync_spend)
+    assert "by_branch()" in src, "must record this branch's share"
+    assert "self.ledger.total_usd()" not in src, (
+        "recording the run-wide total here is what caused the N-fold inflation"
+    )

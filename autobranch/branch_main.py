@@ -301,18 +301,25 @@ class BranchRunner:
         )
 
     def _sync_spend(self) -> None:
-        """Pull the authoritative total out of the ledger into branch state.
+        """Record **this branch's own** spend from the ledger.
 
-        The ledger's shard aggregate is the real number -- it sees every
-        writer. State carries a copy so the registry (and therefore the UI and
-        the artifact) can show spend, and so the budget guard still has a
-        non-zero figure if a ledger read fails. Reporting $0 when a read fails
-        would mean the cap never fires.
+        It used to record the ledger's run-wide total. Every branch then held
+        the same number, and `registry._run_spend` sums branch records when it
+        cannot reach the ledger itself -- so a four-branch run reported four
+        times its real cost. Harmless where the ledger is readable (the budget
+        guard reads it directly, so the cap was never enforced against the
+        inflated figure) and wrong everywhere else, which is every off-volume
+        reader: the local UI, the artifact, any analysis afterwards.
+
+        The ledger attributes every entry to a branch, so the honest value is
+        this branch's share. The run total is then the sum, which is what the
+        fallback assumes.
         """
         if self.ledger is None:
             return
         try:
-            self.state.spend_usd = float(self.ledger.total_usd())
+            mine = self.ledger.by_branch().get(self.env.branch_id, 0.0)
+            self.state.spend_usd = float(mine)
             self.state.tokens = int(self.ledger.tokens())
         except Exception:  # noqa: BLE001 - keep the last known figure
             pass
