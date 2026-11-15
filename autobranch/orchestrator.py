@@ -148,6 +148,10 @@ class BranchEnv:
             "AUTOBRANCH_REWARD": json.dumps(self.reward_config or {}),
             "AUTOBRANCH_SNAPSHOT": self.snapshot_id or "",
             "AUTOBRANCH_WORKSPACE": WORKSPACE,
+            # The sandbox image comes from the submitted manifest and contains
+            # none of our code; the runtime rides the volume instead.
+            "PYTHONPATH": "/data/lib:/bundle",
+            "AUTOBRANCH_BUNDLE": "/bundle",
         }
 
     @staticmethod

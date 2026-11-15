@@ -247,16 +247,24 @@ def test_image_base_unknown_is_rejected(infra):
         infra.build_env_image(ImageSpec(base="ubuntu-ish"), images=FakeImages())
 
 
-def test_image_pyyaml_added_once_and_bundle_pin_wins(infra):
+def test_framework_deps_are_injected_and_a_bundle_pin_wins(infra):
+    """A sandbox image comes from the submitted manifest, which knows nothing
+    about us -- so the framework's own requirements must be injected or the
+    branch loop cannot import `modal` and dies before its first action."""
     plain = FakeImages()
     infra.build_env_image(ImageSpec(pip=("torch==2.8.0",)), images=plain)
     pip_args = [c for c in plain.calls if c[0] == "pip_install"][0][1]
-    assert any(arg.startswith("pyyaml") for arg in pip_args)
+    for dist in ("pyyaml", "modal", "numpy"):
+        assert any(arg.lower().startswith(dist) for arg in pip_args), dist
+    assert "torch==2.8.0" in pip_args
 
+    # A bundle that pins one of ours wins outright: two specs for the same
+    # distribution would let the resolver, not us, pick the version.
     pinned = FakeImages()
     infra.build_env_image(ImageSpec(pip=("PyYAML==5.4.1",)), images=pinned)
     pip_args = [c for c in pinned.calls if c[0] == "pip_install"][0][1]
-    assert pip_args == ("PyYAML==5.4.1",)
+    assert "PyYAML==5.4.1" in pip_args
+    assert not any(a.lower().startswith("pyyaml=") and a != "PyYAML==5.4.1" for a in pip_args)
 
 
 def test_infra_names_are_all_autobranch_prefixed(infra):

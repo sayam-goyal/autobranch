@@ -165,6 +165,17 @@ class BranchRecord:
     sandbox_id: str | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
+    # What this sandbox is doing right now, written by the branch loop BEFORE
+    # it starts the work. Not derivable from the event log: a long train call
+    # emits its event only on completion, so while training the log's last
+    # line still describes the previous step.
+    activity: str = ""
+    activity_since: float = 0.0
+    # The checkpoint the branch would ship, and the provenance of its latest
+    # objective score. Carried here so consolidation never has to guess.
+    checkpoint: str | None = None
+    score_command: str = ""
+    score_detail: dict[str, Any] = field(default_factory=dict)
 
     @property
     def best_score(self) -> float | None:
@@ -599,6 +610,14 @@ class Registry:
                     "tokens": b.tokens,
                     "rationale": b.rationale,
                     "abandoned_reason": b.abandoned_reason,
+                    # A watcher's first question is "what is this sandbox
+                    # doing", so it ships with the node rather than having to
+                    # be scraped out of the event log.
+                    "activity": b.activity,
+                    "activity_since": b.activity_since,
+                    "sandbox_id": b.sandbox_id,
+                    "best_score": b.best_score,
+                    "checkpoint": b.checkpoint,
                 }
                 for b in self.branches(run_id)
             ],

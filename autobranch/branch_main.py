@@ -61,6 +61,7 @@ class BranchState:
     last_metrics: dict[str, Any] = field(default_factory=dict)
     snapshots: list[dict[str, Any]] = field(default_factory=list)
     children: int = 0
+    activity: str = ""
 
     def best(self, objective) -> float | None:
         if not self.scores:
@@ -78,6 +79,7 @@ class BranchState:
             "evals_without_improvement": self.evals_without_improvement,
             "snapshots": self.snapshots,
             "children": self.children,
+            "activity": self.activity,
         }
 
     @staticmethod
@@ -156,6 +158,24 @@ class BranchRunner:
         except Exception:  # noqa: BLE001 - telemetry must never kill a branch
             print(f"[{level}] {message}", flush=True)
 
+    def _activity(self, text: str) -> None:
+        """Publish what this sandbox is doing right now.
+
+        Derivable from the event log, but a watcher should not have to scrape
+        a log to answer "what is this sandbox doing"; and the newest event is
+        not always the current activity -- a long train call emits its event
+        only on completion, so during training the log's last line describes
+        the previous step. This field is written BEFORE the work starts.
+        """
+        self.state.activity = text
+        try:
+            self.registry.update_branch(
+                self.env.run_id, self.env.branch_id,
+                activity=text, activity_since=self.clock(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _persist(self, **fields: Any) -> None:
         self.state.save(self._state_path)
         payload = {
@@ -169,7 +189,17 @@ class BranchRunner:
         try:
             self.registry.update_branch(self.env.run_id, self.env.branch_id, **payload)
         except Exception as exc:  # noqa: BLE001
+            # Surfaced, not swallowed: a dropped patch means the tree the user
+            # is watching and the artifact we ship are both missing this.
             print(f"registry update failed ({exc}); state is still on the volume", flush=True)
+            try:
+                self.registry.append_event(
+                    self.env.run_id, "warn",
+                    f"branch state not published: {type(exc).__name__}: {exc}",
+                    self.env.branch_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def _tree(self) -> TreeView:
         try:
@@ -209,6 +239,7 @@ class BranchRunner:
 
     def run(self) -> dict[str, Any]:
         self._event(f"branch {self.env.branch_id} started (depth {self.env.depth})")
+        self._activity("starting up")
         if not self.state.reward_config:
             self.state.reward_config = initial_reward(self.spec)
             self._event(f"baseline reward: {summarize(self.state.reward_config)}")
@@ -270,6 +301,7 @@ class BranchRunner:
 
     def _decide(self):
         """Ask the agent for one action, with the tree's results in context."""
+        self._activity("thinking (asking the model for its next action)")
         tree = self._tree()
         spend, tokens = self._budget_spent()
         context = self._build_context(tree, spend, tokens)
@@ -354,6 +386,7 @@ class BranchRunner:
 
     def _tool_train(self, args, action) -> dict[str, Any]:
         requested = int(args.get("steps") or DEFAULT_TRAIN_STEPS)
+        self._activity(f"training {requested:,} steps")
         # The trainer has no wall-clock budget of its own, so the loop caps the
         # step count instead: a branch must not spend the whole deadline inside
         # one tool call and leave nothing for evaluation.
@@ -427,6 +460,7 @@ class BranchRunner:
     def _tool_evaluate(self, args, action) -> dict[str, Any]:
         if not self.state.checkpoint:
             raise ToolError("nothing to evaluate yet -- train before evaluating")
+        self._activity(f"evaluating {self.spec.objective.name} at step {self.state.steps_done:,}")
         score = self.evaluator(
             spec=self.spec,
             checkpoint_path=self.state.checkpoint,
@@ -449,8 +483,7 @@ class BranchRunner:
             )
         except Exception:  # noqa: BLE001
             pass
-        self._persist(score_command=command, score_detail=detail,
-                      best_score=self.state.best(self.spec.objective))
+        self._persist(score_command=command, score_detail=detail)
         self._event(
             f"objective {self.spec.objective.name} = {value:.4f} at step {self.state.steps_done}"
         )
@@ -479,6 +512,7 @@ class BranchRunner:
             raise ToolError(f"fork refused: {gate.reason}")
 
         child_id = child_branch_id(self.env.branch_id, self.state.children)
+        self._activity(f"forking {child_id}")
         info = self.forker(
             parent_env=self.env,
             child_branch_id=child_id,
@@ -556,7 +590,9 @@ class BranchRunner:
 
     def _finish(self, status: str, reason: str) -> dict[str, Any]:
         best = self.state.best(self.spec.objective)
-        fields: dict[str, Any] = {"status": status, "best_score": best}
+        self._activity({"succeeded": "done", "abandoned": "abandoned",
+                        "failed": "failed"}.get(status, status))
+        fields: dict[str, Any] = {"status": status}
         if status in ("abandoned", "failed"):
             fields["abandoned_reason"] = reason
         self._persist(**fields)

@@ -38,7 +38,13 @@ WEB_PINS = (
 )
 
 # The manifest is YAML, so every image that touches a bundle needs a parser.
-BASE_PIP = ("pyyaml==6.0.2",)
+# What the framework itself needs wherever its code runs -- including inside a
+# sandbox whose image was built from a submitted manifest that knows nothing
+# about us. `modal` is not optional there: the branch loop reads the registry
+# (a modal.Dict), snapshots its own workspace, and creates child sandboxes.
+# `numpy` is needed to compose a reward at all. A bundle that pins either one
+# wins, via `_merge_pip`.
+BASE_PIP = ("pyyaml==6.0.2", "modal==1.6.4", "numpy>=1.26")
 
 PYTHON_VERSION = "3.11"
 

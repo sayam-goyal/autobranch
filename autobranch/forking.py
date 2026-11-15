@@ -50,7 +50,8 @@ def self_sandbox():
     return modal.Sandbox.from_id(sandbox_id)
 
 
-def make_forker(*, spec, budget, registry=None, app=None, image=None, launcher=None):
+def make_forker(*, spec, budget, registry=None, app=None, image=None, launcher=None,
+                snapshotter=None):
     """Build the `forker` callable that `BranchRunner` invokes.
 
     Injectable throughout so the branch loop can be tested with a fake that
@@ -80,6 +81,7 @@ def make_forker(*, spec, budget, registry=None, app=None, image=None, launcher=N
             app=app,
             image=image,
             launcher=launcher,
+            snapshotter=snapshotter,
         )
 
     return forker
@@ -115,6 +117,7 @@ def _fork_child(
     registry,
     app,
     image,
+    snapshotter,
     launcher,
 ) -> dict[str, Any]:
     import modal
@@ -124,9 +127,16 @@ def _fork_child(
     workspace = os.environ.get("AUTOBRANCH_WORKSPACE", "/workspace")
 
     # 1. Freeze our current state. The parent keeps running.
-    parent = self_sandbox()
-    snapshot = parent.snapshot_directory(workspace, ttl=SNAPSHOT_TTL)
-    snapshot_id = snapshot.object_id
+    #    `snapshotter` is injected only by tests; production always snapshots
+    #    the live sandbox. It exists because the seam used to sit *after* this
+    #    call, which made the whole fork path untestable off Modal.
+    if snapshotter is not None:
+        snapshot = snapshotter(workspace)
+        snapshot_id = getattr(snapshot, "object_id", snapshot)
+    else:
+        parent = self_sandbox()
+        snapshot = parent.snapshot_directory(workspace, ttl=SNAPSHOT_TTL)
+        snapshot_id = snapshot.object_id
 
     # 2. The child's identity. It inherits the run, the spec, the constraints,
     #    the budget and -- critically -- the same absolute deadline, so a deep
@@ -157,6 +167,7 @@ def _fork_child(
         except Exception:  # noqa: BLE001
             pass
 
+    ensure_runtime_on_volume()
     the_app = app or modal.App.lookup(infra.APP_NAME, create_if_missing=True)
     the_image = image or infra.image_for(spec)
 
@@ -177,7 +188,8 @@ def _fork_child(
     # 4. Start the child's loop detached. We do not wait: the parent has its
     #    own line to continue, which is the entire point of a branch.
     child.exec(
-        "python", "-m", "autobranch.branch_main",
+        "bash", "-lc",
+        "python -u -m autobranch.branch_main >> /workspace/branch.log 2>&1",
         env=child_env.to_env(),
         timeout=max(600, int(parent_env.deadline_ts - time.time())),
     )
@@ -204,6 +216,54 @@ def modal_auth_secret():
     import modal
 
     return modal.Secret.from_name("autobranch-modal-auth")
+
+
+RUNTIME_DIR = "lib"
+
+
+def ensure_runtime_on_volume(*, data_root: str | None = None) -> str:
+    """Publish the `autobranch` package to the volume for sandboxes to import.
+
+    A sandbox's image is built from the *submitted manifest*, so it contains
+    the environment's dependencies and nothing of ours -- the branch loop
+    would start with `ModuleNotFoundError: No module named 'autobranch'`.
+    `add_local_python_source` cannot help: it needs local files at build time,
+    and these sandboxes are created at runtime from a deployed app.
+
+    So the runtime travels on the volume that every branch already mounts, and
+    `PYTHONPATH` points at it. Copying from the caller's own installed package
+    means the sandboxes always run the same code as the launcher, with no
+    second publishing step to forget.
+    """
+    import shutil
+
+    from autobranch import infra
+
+    root = data_root or infra.DATA_ROOT
+    src = os.path.dirname(os.path.abspath(__file__))
+    dst = os.path.join(root, RUNTIME_DIR, "autobranch")
+
+    # A branch forking its own child runs THIS code from the volume copy, so
+    # src and dst are the same directory -- and the refresh below would delete
+    # the package out from under the running process. When we are already the
+    # published copy there is by definition nothing to publish.
+    if os.path.abspath(src) == os.path.abspath(dst):
+        return os.path.join(root, RUNTIME_DIR)
+
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    # Replace wholesale rather than merge: a stale module left behind by an
+    # older version is far harder to diagnose than a slightly slower copy.
+    if os.path.isdir(dst):
+        shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(
+        src, dst,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "vendor"),
+    )
+    try:
+        infra.volume.commit()
+    except Exception:  # noqa: BLE001 - off-volume (tests, local runs)
+        pass
+    return os.path.join(root, RUNTIME_DIR)
 
 
 def _pending_record(child_env: BranchEnv, note: str):
@@ -269,6 +329,7 @@ def launch_root(
         except Exception:  # noqa: BLE001
             pass
 
+    ensure_runtime_on_volume()
     the_app = modal.App.lookup(infra.APP_NAME, create_if_missing=True)
     sb = modal.Sandbox.create(
         "sleep", "infinity",
@@ -292,8 +353,9 @@ def launch_root(
         timeout=300,
     ).wait()
     sb.exec(
-        "python", "-m", "autobranch.branch_main",
-        env={**env.to_env(), "AUTOBRANCH_BUNDLE": "/bundle"},
+        "bash", "-lc",
+        "python -u -m autobranch.branch_main >> /workspace/branch.log 2>&1",
+        env=env.to_env(),
         timeout=int(float(budget.hours) * 3600) + 300,
     )
 

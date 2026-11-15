@@ -104,16 +104,16 @@ def web():
     max_containers=8,
 )
 def spawn_run(run_id: str, spec_dict: dict, constraints_dict: dict, budget_dict: dict) -> dict:
-    """Stand up the root branch record for a run and return.
+    """Record the root branch, then hand the run to Modal.
 
-    Deliberately inert for now: it records the root branch and a `queued`
-    event so the run is visible in the UI with real state, and stops there.
-    The run stays `pending` rather than being marked `running`, because a
-    `running` run with no agent behind it is exactly the kind of completion
-    event DESIGN.md lesson 8 says never to trust.
+    After `launch_root` returns, nothing local supervises the run: the root
+    sandbox owns its agent loop and forks its own children. The run is marked
+    `running` only once a sandbox genuinely exists -- a `running` run with no
+    agent behind it is exactly the kind of unverified completion signal
+    DESIGN.md lesson 8 says never to trust.
     """
     from autobranch.branch import root_branch_id
-    from autobranch.orchestrator import initial_reward
+    from autobranch.orchestrator import Budget, initial_reward
     from autobranch.registry import BranchRecord, Registry
     from autobranch.spec import EnvironmentSpec
 
@@ -148,8 +148,8 @@ def spawn_run(run_id: str, spec_dict: dict, constraints_dict: dict, budget_dict:
     try:
         info = launch_root(
             spec=spec,
-            constraints=constraints if isinstance(constraints, dict) else constraints.to_dict(),
-            budget=budget,
+            constraints=constraints_dict or {},
+            budget=Budget.parse(budget_dict),
             run_id=run_id,
             registry=registry,
         )

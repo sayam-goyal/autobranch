@@ -13,7 +13,7 @@
 <a class="skip-link" href="#view">Skip to content</a>
 
 <header class="topbar">
-  <a class="brand" href="#/new">
+  <a class="brand" href="#/runs">
     <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <path d="M4 14V5a3 3 0 0 1 3-3h5" />
       <path d="M4 9h3a3 3 0 0 1 3 3v2" />
@@ -25,9 +25,11 @@
   </a>
 
   <nav class="topnav" aria-label="Sections">
+    <a href="#/runs" data-nav="runs">Training runs</a>
     <a href="#/new" data-nav="new">New run</a>
-    <a href="#/new" data-nav="run" hidden>Run</a>
-    <a href="#/new" data-nav="artifact" hidden>Artifact</a>
+    <span class="nav-sep mono" id="nav-sep" aria-hidden="true" hidden>/</span>
+    <a href="#/runs" data-nav="run" hidden>Run</a>
+    <a href="#/runs" data-nav="artifact" hidden>Artifact</a>
   </nav>
 
   <div class="topbar-right">
@@ -47,6 +49,72 @@
   <span class="sep" aria-hidden="true">/</span>
   <span class="mono" id="api-origin">api: same-origin</span>
 </footer>
+
+
+<!-- ───────────────────────────── training runs ───────────────────────────── -->
+<template id="tpl-runs">
+  <section class="page page-runs">
+    <div class="page-head">
+      <p class="eyebrow">Training runs</p>
+      <h1>Everything you have submitted.</h1>
+      <p class="lede">
+        One row per run. A run owns a tree of Modal sandboxes, each one training a
+        different reward config against the same untouchable objective. Open a row to
+        watch its sandboxes.
+      </p>
+    </div>
+
+    <div class="runs-bar">
+      <dl class="stats stats-left">
+        <div class="stat">
+          <dt>Runs</dt>
+          <dd class="mono num" data-f="total">—</dd>
+        </div>
+        <div class="stat">
+          <dt>Live now</dt>
+          <dd class="mono num" data-f="live">—</dd>
+        </div>
+        <div class="stat">
+          <dt>Total spend</dt>
+          <dd class="mono num" data-f="spend">—</dd>
+        </div>
+      </dl>
+
+      <div class="runs-actions">
+        <span class="poll-note mono" data-f="poll-note" aria-live="polite"></span>
+        <a class="btn btn-primary btn-sm" href="#/new">New run</a>
+      </div>
+    </div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <p class="eyebrow">Runs</p>
+        <span class="panel-note mono" data-f="sort-note">newest first</span>
+      </div>
+      <div class="table-scroll">
+        <table class="table table-runs" data-f="runs-table">
+          <thead>
+            <tr>
+              <th scope="col"><button class="th-sort" type="button" data-sort="run_id">Run</button></th>
+              <th scope="col"><button class="th-sort" type="button" data-sort="env_name">Environment</button></th>
+              <th scope="col"><button class="th-sort" type="button" data-sort="objective_name">Objective</button></th>
+              <th scope="col"><button class="th-sort" type="button" data-sort="state">State</button></th>
+              <th scope="col" class="num"><button class="th-sort" type="button" data-sort="best_score">Best</button></th>
+              <th scope="col"><button class="th-sort" type="button" data-sort="branches">Sandboxes</button></th>
+              <th scope="col" class="num"><button class="th-sort" type="button" data-sort="spend_usd">Spend</button></th>
+              <th scope="col" class="num"><button class="th-sort" type="button" data-sort="created_at">Age</button></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="panel-foot" data-f="foot">
+        Sandbox counts are fetched one run per refresh cycle, so the list never
+        stampedes the API. A run whose tree has not been read yet shows a dash.
+      </p>
+    </section>
+  </section>
+</template>
 
 
 <!-- ───────────────────────────── new run ───────────────────────────── -->
@@ -98,7 +166,34 @@
           <input class="field mono" type="url" id="bundle-url" name="bundle_url" placeholder="https://github.com/your-org/street-fighter-iii-env.git#main" autocomplete="off" spellcheck="false" />
           <p class="hint">Cloned inside the sandbox at submission. A tag or <code class="mono">#ref</code> pins the build.</p>
         </div>
+
+        <p class="field-problem mono" data-problem="bundle" role="alert" hidden></p>
       </fieldset>
+
+      <!-- ── the parse preview: what the system understood ── -->
+      <section class="block preflight">
+        <div class="pf-head">
+          <p class="eyebrow">What the system understood</p>
+          <span class="badge" data-f="pf-state" hidden></span>
+        </div>
+        <p class="hint">
+          The manifest is parsed in the browser before anything is submitted, so you can read the
+          contract the way the agents will: the signals they may compose a reward from, the
+          objective they may never touch, and the hardware the run will ask Modal for. The server
+          re-validates the same bundle on submit and its answer wins.
+        </p>
+
+        <div class="pf-placeholder" data-f="pf-placeholder">
+          <p class="mono">No manifest parsed yet.</p>
+          <p class="hint">
+            Drop a <code class="mono">.zip</code> above, or
+            <button class="btn-link" type="button" data-f="pf-example">preview the gridworld reference manifest</button>.
+            A git URL is resolved server-side, so it is parsed at submit instead.
+          </p>
+        </div>
+
+        <div class="pf-body" data-f="pf-body" hidden></div>
+      </section>
 
       <fieldset class="block">
         <legend class="eyebrow">Constraints</legend>
@@ -108,6 +203,7 @@
 stay under $50
 must beat 76% win rate vs the level-8 CPU
 no GPU larger than an L40S"></textarea>
+        <p class="field-problem mono" data-problem="constraints" role="alert" hidden></p>
       </fieldset>
 
       <fieldset class="block">
@@ -127,32 +223,19 @@ no GPU larger than an L40S"></textarea>
             <input class="field mono" type="number" id="budget-branches" name="max_branches" min="1" max="64" step="1" value="8" inputmode="numeric" />
           </div>
         </div>
+        <p class="field-problem mono" data-problem="budget" role="alert" hidden></p>
       </fieldset>
+
+      <div class="problems" data-f="problems" role="alert" hidden>
+        <p class="problems-head mono" data-f="problems-head">—</p>
+        <ol class="problems-list" data-f="problems-list"></ol>
+      </div>
 
       <div class="form-foot">
         <button class="btn btn-primary" type="submit" id="submit-run">Start run</button>
-        <p class="form-error mono" id="form-error" role="alert" hidden></p>
+        <p class="form-note mono" data-f="submit-note">The bundle is validated before a single container is created.</p>
       </div>
     </form>
-
-    <section class="block" id="recent-block" hidden>
-      <p class="eyebrow">Recent runs</p>
-      <div class="table-scroll">
-        <table class="table" id="recent-table">
-          <thead>
-            <tr>
-              <th scope="col">Run</th>
-              <th scope="col">Environment</th>
-              <th scope="col">Objective</th>
-              <th scope="col">State</th>
-              <th scope="col" class="num">Best</th>
-              <th scope="col" class="num">Spend</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
   </section>
 </template>
 
@@ -169,6 +252,8 @@ no GPU larger than an L40S"></textarea>
           <span class="sep" aria-hidden="true">/</span>
           <span class="mono" data-f="objective">—</span>
           <span class="dir-chip mono" data-f="direction"></span>
+          <span class="sep" aria-hidden="true">/</span>
+          <span class="mono" data-f="started">—</span>
         </p>
       </div>
 
@@ -186,13 +271,13 @@ no GPU larger than an L40S"></textarea>
           <dd class="mono num accent" data-f="best-score">—</dd>
         </div>
         <div class="stat">
-          <dt>Branches</dt>
+          <dt>Sandboxes</dt>
           <dd class="mono num" data-f="branch-count">—</dd>
         </div>
       </dl>
 
       <div class="run-head-actions">
-        <a class="btn btn-primary btn-sm" data-f="artifact-link" href="#/new">Artifact</a>
+        <a class="btn btn-primary btn-sm" data-f="artifact-link" href="#/runs">Artifact</a>
         <button class="btn btn-sm" type="button" data-f="stop">Stop run</button>
       </div>
     </header>
@@ -206,13 +291,18 @@ no GPU larger than an L40S"></textarea>
         <div class="meter-fill" data-f="meter-fill"></div>
       </div>
       <p class="meter-foot mono" data-f="budget-foot">—</p>
+      <ul class="status-chips" data-f="status-chips" aria-label="Sandboxes by status"></ul>
     </section>
 
     <div class="run-grid">
       <section class="panel panel-tree">
         <div class="panel-head">
-          <p class="eyebrow">Branch tree</p>
+          <div class="panel-title">
+            <p class="eyebrow">Sandbox tree</p>
+            <p class="panel-note">Each node is one Modal sandbox: its short id, its status, and what it is doing right now.</p>
+          </div>
           <ul class="legend" aria-label="Status legend">
+            <li><span class="dot st-pending" aria-hidden="true"></span>starting</li>
             <li><span class="dot st-running" aria-hidden="true"></span>running</li>
             <li><span class="dot st-evaluating" aria-hidden="true"></span>evaluating</li>
             <li><span class="dot st-succeeded" aria-hidden="true"></span>succeeded</li>
@@ -220,21 +310,21 @@ no GPU larger than an L40S"></textarea>
             <li><span class="dot st-failed" aria-hidden="true"></span>failed</li>
           </ul>
         </div>
-        <div class="tree-scroll" data-f="tree-scroll" tabindex="0" role="group" aria-label="Branch tree — select a branch for detail">
+        <div class="tree-scroll" data-f="tree-scroll" tabindex="0" role="group" aria-label="Sandbox tree — select a sandbox for detail">
           <svg class="tree-svg" data-f="tree-svg" xmlns="http://www.w3.org/2000/svg"></svg>
         </div>
         <p class="panel-foot">Abandoned lines stay on the canvas. Every dead end one branch recorded is a dead end its siblings never pay for twice.</p>
       </section>
 
       <aside class="panel panel-detail" data-f="detail" aria-live="polite">
-        <p class="empty mono">Select a branch.</p>
+        <p class="empty mono">Select a sandbox.</p>
       </aside>
     </div>
 
     <div class="run-grid-2">
       <section class="panel panel-table">
         <div class="panel-head">
-          <p class="eyebrow">Branches</p>
+          <p class="eyebrow">Sandboxes</p>
           <span class="panel-note mono" data-f="sort-note">sorted by objective score</span>
         </div>
         <div class="table-scroll">
@@ -242,11 +332,13 @@ no GPU larger than an L40S"></textarea>
             <thead>
               <tr>
                 <th scope="col"><button class="th-sort" type="button" data-sort="branch_id">Branch</button></th>
+                <th scope="col"><button class="th-sort" type="button" data-sort="sandbox">Sandbox</button></th>
                 <th scope="col" class="num"><button class="th-sort" type="button" data-sort="depth">Depth</button></th>
                 <th scope="col"><button class="th-sort" type="button" data-sort="status">Status</button></th>
                 <th scope="col" class="num"><button class="th-sort" type="button" data-sort="score">Objective</button></th>
                 <th scope="col" class="num"><button class="th-sort" type="button" data-sort="spend_usd">Spend</button></th>
                 <th scope="col" class="num"><button class="th-sort" type="button" data-sort="tokens">Tokens</button></th>
+                <th scope="col" class="cell-wide">Doing now</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -256,10 +348,11 @@ no GPU larger than an L40S"></textarea>
 
       <section class="panel panel-log">
         <div class="panel-head">
-          <p class="eyebrow">Event log</p>
+          <p class="eyebrow">Activity</p>
           <span class="panel-note mono" data-f="log-count"></span>
         </div>
-        <ol class="log" data-f="log" aria-label="Event log"></ol>
+        <ol class="feed" data-f="log" aria-label="Run activity, newest first"></ol>
+        <p class="panel-foot">Newest first. The branch chip selects that sandbox in the tree.</p>
       </section>
     </div>
   </section>
@@ -285,7 +378,7 @@ no GPU larger than an L40S"></textarea>
           <div><dt>Winning branch</dt><dd class="mono" data-f="branch">—</dd></div>
           <div><dt>Environment</dt><dd class="mono" data-f="env">—</dd></div>
           <div><dt>Total spend</dt><dd class="mono num" data-f="spend">—</dd></div>
-          <div><dt>Branches explored</dt><dd class="mono num" data-f="explored">—</dd></div>
+          <div><dt>Sandboxes explored</dt><dd class="mono num" data-f="explored">—</dd></div>
         </dl>
       </div>
     </section>
@@ -310,7 +403,7 @@ no GPU larger than an L40S"></textarea>
       </div>
     </section>
 
-    <p class="back"><a data-f="back" href="#/new">← Back to the run</a></p>
+    <p class="back"><a data-f="back" href="#/runs">← Back to the run</a></p>
   </section>
 </template>
 

@@ -295,6 +295,10 @@ def test_api_payload_matches_the_frontend_contract_exactly(backend):
     assert set(payload["branches"][0]) == {
         "branch_id", "parent_id", "depth", "status", "reward_config", "scores",
         "spend_usd", "tokens", "rationale", "abandoned_reason",
+        # A branch is a sandbox, and the tree view's first question is what it
+        # is doing; these travel with the node so the client never scrapes the
+        # event log to answer it.
+        "activity", "activity_since", "sandbox_id", "best_score", "checkpoint",
     }
     assert set(payload["events"][0]) == {"ts", "level", "branch_id", "message"}
     assert payload["run_id"] == "r-1"
