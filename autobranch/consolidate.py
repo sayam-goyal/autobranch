@@ -265,6 +265,71 @@ def artifact_readme(manifest: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def weights_note(payload: dict[str, Any], winner: Winner, ckpt_name: str | None) -> str:
+    """Say where the tensors actually are, per trainer.
+
+    The one thing a person downloading this needs and cannot infer: whether
+    `weights/*.pt` contains the model or a record pointing at it.
+    """
+    run_id = payload.get("run_id", "<run>")
+    trainer = (payload.get("spec") or {}).get("trainer", "unknown")
+    branch = winner.branch_id
+    lines = [
+        "# Where the weights are",
+        "",
+        f"Run `{run_id}`, winning branch `{branch}`, trainer `{trainer}`.",
+        "",
+    ]
+    if trainer == "grpo_full":
+        lines += [
+            f"`{ckpt_name or 'latest.pt'}` in this directory is the **record**, not the",
+            "model. It carries the architecture, the action vocabulary, the prompt and",
+            "the reward fingerprint, and its `policy` field is deliberately empty.",
+            "",
+            "The trained tensors are a full Hugging Face export of roughly 16 GiB, on",
+            "the `autobranch-data` Volume:",
+            "",
+            "```",
+            f"runs/{run_id}/{branch}/hf/",
+            "```",
+            "",
+            "Fetch it with:",
+            "",
+            "```bash",
+            f"modal volume get autobranch-data runs/{run_id}/{branch}/hf ./hf",
+            "```",
+            "",
+            "It is not copied in here because duplicating 16 GiB onto the same Volume",
+            "buys nothing, and because an HF export is loadable by anything that reads",
+            "`transformers` -- which a tensor dict inside a pickle is not. Load it with",
+            "`autobranch.lm_policy.load_full_policy(<this checkpoint>)`, which resolves",
+            "the export beside the record, or directly with `from_pretrained` on the",
+            "directory above.",
+        ]
+    elif trainer == "grpo_lora":
+        lines += [
+            f"`{ckpt_name or 'latest.pt'}` carries the **adapter tensors inline**, so it",
+            "is standalone: `autobranch.lm_policy.load_policy` rebuilds the adapter from",
+            "this file alone and does not need the `adapter/` directory the trainer wrote.",
+            "",
+            "It does need the **base model** named in `arch.base_model`, which is",
+            "downloaded on demand to the Volume under `models/`.",
+        ]
+    else:
+        lines += [
+            f"`{ckpt_name or 'latest.pt'}` carries the **weights inline**. It loads in",
+            "plain torch with no framework and nothing else is required:",
+            "",
+            "```python",
+            "import torch",
+            f"payload = torch.load('weights/{ckpt_name or 'latest.pt'}', map_location='cpu',",
+            "                     weights_only=False)",
+            "payload['arch'], payload['policy'].keys()",
+            "```",
+        ]
+    return "\n".join(lines) + "\n"
+
+
 def consolidate(
     payload: dict[str, Any],
     objective,
@@ -313,6 +378,19 @@ def consolidate(
             "The winning branch recorded no checkpoint path. The score in "
             "manifest.json is real but the weights were not captured.\n",
         )
+
+    # A full fine-tune's tensors are not in its checkpoint record. `grpo_full`
+    # writes `"policy": {}` on purpose -- 16 GiB of tensors inside a pickle
+    # would double the artifact and could not be served by anything but this
+    # framework -- and keeps them in an HF export on the Volume. So an artifact
+    # that copied only the record would be well-formed, look complete, and
+    # contain no weights. That is the same failure as shipping MISSING.txt,
+    # except it does not announce itself.
+    #
+    # Written unconditionally because it is always true and never wrong: for
+    # `ppo` and `grpo_lora` the tensors really are inline, and saying so costs
+    # a paragraph.
+    _write("weights/WEIGHTS.md", weights_note(payload, winner, ckpt_name))
 
     _write("manifest.json", json.dumps(manifest, indent=2))
     _write("reward_lineage.json", json.dumps(reward_lineage(payload, winner.branch_id), indent=2))
