@@ -47,6 +47,57 @@ The manifest reports **both policy modes** — deterministic 0.996, stochastic
 0.836 — which exposed a 0.16 mode gap that a single-mode number would have
 hidden.
 
+## Why this rather than tuning a reward by hand
+
+Most RL effort goes into the reward, and most rewards are written by guessing,
+running for hours, squinting at a curve, and guessing again. Three things make
+that loop expensive, and this framework attacks each one.
+
+**The reward usually decides the outcome, and the right one is not guessable.**
+Measured, on real runs:
+
+| run | finding |
+|---|---|
+| Rocket League | `approach_ball` at 20 peaked at **0.599** then collapsed to **0.353** while its *training return rose twentyfold*; at 3 it reached **0.922** |
+| Street Fighter III | a potential-shaped reward beat a hand-tuned one by **24 points** at level 8 (79.0% vs 55.0%), at matched model size and configuration |
+| Tetris | the reward axis was a **null** — six configurations across two rewrites, all exactly **0.000** |
+
+The last row is the honest one. **Searching rewards does not always help**, and
+when it does not, the useful result is learning so cheaply: six Tetris arms cost
+**$4.51** to establish that the whole axis was flat, which redirected the effort
+to the thing that did matter (how the policy represents an action — 0.000 to
+0.994 on a *byte-identical* reward). A search that reports a null quickly is
+worth more than a hunch defended for a week.
+
+**A human tuning a reward is also choosing the scoreboard.** That is the failure
+mode nobody catches in themselves: you adjust the reward, the metric you are
+watching improves, and you cannot tell whether the policy got better or the
+measurement got friendlier. Here the two are *structurally* separated —
+environments emit **signals** (facts about a transition), agents compose rewards
+from those signals, and the objective is evaluated by code that imports no
+reward module at all. `tests/test_objective_independence.py` walks the import
+graph and fails if that is ever violated. An agent cannot make itself look good
+without getting good, because it has no path to the thing that judges it.
+
+**Exploring in parallel is usually too expensive to do properly.** A branch here
+is a Modal Sandbox forked from a filesystem snapshot, so a promising line is
+continued rather than restarted — the child inherits weights, optimizer state
+and history while writing nowhere the parent can see, and the parent keeps
+training. That makes "try six rewards from this checkpoint" cost six sandboxes
+for the remaining steps, not six runs from scratch.
+
+### What it does not do
+
+- It does not change the policy architecture. Branches mutate **rewards**; the
+  network comes from the manifest. The Tetris finding — representation beat
+  every reward — is exactly the kind of thing this search cannot find, and the
+  framework's job there was to rule out the axis it *can* search, fast.
+- It does not remove the need for a good objective. Everything rests on the
+  evaluator being the number you actually care about; a saturated or gameable
+  objective produces a confident, worthless winner.
+- It is not cheaper than one good guess. It is cheaper than ten bad ones, and it
+  tells you which you had.
+
 ## The environment contract
 
 An environment is a bundle: a directory, zip, or git URL with a manifest and
@@ -70,7 +121,7 @@ objective:                    # What we optimise. Agents may NEVER modify this.
 
 resources: {gpu: null, cpu: 2, memory: 8192}
 policy:    {kind: discrete, n_actions: 4, obs_dim: 81}
-trainer:   ppo                # ppo | grpo_lora | custom:module:fn
+trainer:   ppo                # ppo | grpo_lora | grpo_full | custom:module:fn
 ```
 
 ```python
@@ -143,6 +194,32 @@ are extracted:
 | `nothing bigger than an L40S` | GPU ceiling |
 | `stay under $50` | hard spend cap, enforced not advised |
 
+## Three trainers, one method
+
+| trainer | what it writes | when |
+|---|---|---|
+| `ppo` | a dense MLP from scratch | the environment has a small observation vector |
+| `grpo_lora` | an adapter over frozen base weights | post-training that has to fit on one GPU |
+| `grpo_full` | **every parameter** of a base model | reproducing a full fine-tune |
+
+The RL method is the same in both post-training paths -- critic-free,
+group-relative advantages, a clipped surrogate, and an action that is a masked
+token rather than parsed text. They differ in what they are allowed to write
+to, which is a question about memory and about fidelity to what is being
+reproduced, not about algorithm.
+
+`grpo_full` exists because the thing it reproduces was a full fine-tune. An
+8.77B model takes a full-parameter update on **one** H100 -- 49.5 GiB of 79.2,
+measured, with an 8-bit optimizer doing the work that makes it fit, since fp32
+Adam moments alone would be 64 GiB.
+
+It also carries the vision path: `examples/sf3` feeds
+`Qwen/Qwen3-VL-8B-Instruct` the emulator's frame plus a short state line, which
+costs ~104 prompt tokens. The action menu is in the prompt, because a policy
+sampling over 40 masked tokens with no labels cannot know which one is a
+Hadouken and would have to learn the mapping by trial -- discarding everything
+the base model already knows about the game.
+
 ## Post-training a base model
 
 `must posttrain Qwen/Qwen3-4B` switches the trainer to `grpo_lora`: LoRA
@@ -199,6 +276,7 @@ autobranch/
   forking.py        snapshot, fork, rollback
   trainer.py        PPO, driven by the spec
   posttrain.py      grpo_lora: LoRA post-training, critic-free
+  posttrain_full.py grpo_full: full-parameter post-training, critic-free
   lm_policy.py      running a post-trained policy -- imports no reward code
   objective.py      the immutable measurement
   registry.py       run/branch state, one key per writer
@@ -208,6 +286,7 @@ autobranch/
 frontend/           vanilla HTML/CSS/JS, no build step
 examples/gridworld/ the reference environment (ppo)
 examples/wordguess/ the reference environment for post-training
+examples/sf3/       Street Fighter III, a vision policy over a real emulator
 ```
 
 ## Running it
@@ -219,7 +298,7 @@ modal run app.py::cli_validate  --bundle examples/gridworld
 modal run app.py::cli_submit    --bundle examples/gridworld --usd 8 --hours 1
 modal run app.py::cli_status    --run-id run-xxxx
 modal run app.py::cli_finalize  --run-id run-xxxx   # build the artifact
-python3 -m pytest tests/ -q                        # 413 tests
+python3 -m pytest tests/ -q                        # 418 tests
 ```
 
 ## Notes from building it

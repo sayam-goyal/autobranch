@@ -1,0 +1,134 @@
+# Street Fighter III 3rd Strike -- Ryu vs the arcade CPU.
+#
+# Reproduces modal-labs/sf3's setup (same base model, same frames-plus-text
+# input, same character pool and super art, same full-parameter fine-tune) and
+# replaces exactly one thing: the reward. Hinh hand-tuned his
+# (ROUND_WIN_BONUS 1.0, DAMAGE_REWARD_WEIGHT 0.1, INVALID_MOVE_PENALTY
+# 20/160, discounted on a 3600-frame half-life). Here the reward is searched,
+# and his configuration is expressible in the DSL, so it is one point in the
+# space rather than a privileged baseline.
+name: sf3-ryu
+version: 1
+description: >
+  SF3 3rd Strike, Ryu vs the arcade CPU at a fixed difficulty. One
+  environment lane is a Modal Sandbox running MAME over a real ROM; a step is
+  one frame-exact macro action from a 40-entry menu. The policy sees the
+  emulator's frame plus a short state line, which is what Qwen3-VL is for.
+
+entrypoint: sf3_env:make_env
+trainer: grpo_full
+
+# FACTS about a transition. No weights, no opinions. The emulator computes the
+# differences (damage is health before minus health after) because that is
+# where both ends of the difference are known.
+signals:
+  - name: damage_dealt
+    type: float
+    range: [0, 1]
+    doc: "health removed from the opponent this step, as a fraction of a full bar"
+  - name: damage_taken
+    type: float
+    range: [0, 1]
+    doc: "health removed from you this step, as a fraction of a full bar"
+  - name: round_won
+    type: float
+    range: [0, 1]
+    doc: "1 on the step a round is won"
+  - name: round_lost
+    type: float
+    range: [0, 1]
+    doc: "1 on the step a round is lost"
+  - name: invalid_move
+    type: float
+    range: [0, 1]
+    doc: >
+      1 when the chosen macro action was unavailable in the current state and
+      consumed no frames, so the game advanced on a Wait instead
+  - name: decision_frames
+    type: float
+    range: [0, 300]
+    doc: "game frames this macro action consumed; a proxy for committing to it"
+  - name: super_gain
+    type: float
+    range: [0, 1]
+    doc: "super meter gained this step, as a fraction of a full bar"
+  - name: opp_stun_gain
+    type: float
+    range: [0, 1]
+    doc: "opponent stun meter gained this step, as a fraction of a full bar"
+  - name: health_frac
+    type: float
+    range: [0, 1]
+    doc: "your health after the step; a level, not a change"
+  - name: opp_health_frac
+    type: float
+    range: [0, 1]
+    doc: "opponent health after the step; a level, not a change"
+
+# The only number that counts, and the only thing an agent may never touch.
+# Match outcomes only: no damage, no reward term, no training metric.
+objective:
+  name: win_rate_vs_cpu8
+  evaluator: sf3_env:evaluate
+  direction: maximize
+  budget:
+    # Sized against the measured lane, not chosen round. A decision costs
+    # ~0.25 s of emulator time and a 2-of-3 match runs ~1600 decisions, so 8
+    # concurrent lanes score 8 matches in ~8 minutes. 24 matches is ~24
+    # minutes per evaluation, which a 5.5-hour window can afford several times
+    # per branch; 40 matches in both modes would have been 80 minutes a call.
+    matches: 24
+    difficulty: 8
+    # Equal to `matches`, deliberately. A match is ~1600 sequential decisions
+    # at ~1.0 s each (0.25 s emulator + ~0.75 s VL forward, both measured), so
+    # one match is ~27 minutes of wall clock and no amount of parallelism makes
+    # it shorter. Concurrency only decides how many run at once: at 8 lanes
+    # this budget took three batches and ~80 minutes, at 24 it takes one and
+    # ~27, for 24 extra 2-CPU sandboxes costing well under a dollar.
+    concurrency: 24
+    # Stochastic only. The predecessor project's policy was competent while
+    # sampling and won 0 of 100 at its mode, and that degeneracy was inherited
+    # from the base model rather than caused by RL -- so the sampled number is
+    # the honest one to steer the search by, and the argmax is worth measuring
+    # once at the end rather than on every call.
+    modes: [stochastic]
+    deterministic: false
+
+# The TRAINER's image. The emulator runs a different one (MAME, 2 CPUs) built
+# by sf3_env.emulator_image: putting MAME here would bloat every GPU container
+# and putting torch in the emulator would make every lane pull multi-GB.
+image:
+  base: debian_slim
+  python: "3.11"
+  pip:
+    - torch==2.8.0
+    - torchvision==0.23.0          # Qwen3-VL's processor imports it even for a still
+    - transformers==4.57.1
+    - accelerate==1.10.1
+    - bitsandbytes==0.48.1         # 8-bit Adam: fp32 moments on 8B need 64 GiB
+    - pillow==11.3.0
+    - numpy==2.2.6
+    - modal==1.6.4                 # the env creates its own emulator sandboxes
+  env:
+    HF_HOME: /data/hf
+    TOKENIZERS_PARALLELISM: "false"
+    SF3_ROM_VOLUME: sf3-rom
+
+# One H100, measured not assumed. probe_full_ft.py ran a real
+# forward+backward+AdamW8bit step on the real model with a real 384x224 frame:
+# 8.77B parameters all trainable, 49.5 GiB reserved of 79.2 available, 2.93 s
+# per step. Model parallelism would have cost twice the GPU for nothing.
+resources:
+  gpu: H100
+  cpu: 8.0
+  memory: 65536
+
+policy:
+  kind: discrete
+  n_actions: 40                    # Ryu's macro menu; sf_core.actions is the source
+  # Not a vector length here: the observation is a frame plus a state line, and
+  # the VL processor decides the token count. Declared because the contract
+  # requires it, and set to the state line's field count so a mismatch with the
+  # dense-MLP path fails loudly rather than silently reshaping.
+  obs_dim: 7
+  base_model: Qwen/Qwen3-VL-8B-Instruct

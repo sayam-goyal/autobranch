@@ -185,6 +185,10 @@ MLP_ARCH_KINDS = ("discrete", "continuous")
 #: shape it is, and which a hand-edited file could disagree with.
 LM_LORA_ARCH_KIND = "lm_lora_discrete"
 
+#: What `grpo_full` writes: every parameter updated, weights in an HF export
+#: beside the record rather than inline. Same duck type reaches the evaluator.
+LM_FULL_ARCH_KIND = "lm_full_discrete"
+
 
 def load_checkpoint_policy(
     checkpoint_path: str | os.PathLike, *, device: str = "cpu"
@@ -224,10 +228,15 @@ def load_checkpoint_policy(
         from autobranch import lm_policy
 
         return lm_policy.load_policy(path, device=device)
+    if kind == LM_FULL_ARCH_KIND:
+        from autobranch import lm_policy
+
+        return lm_policy.load_full_policy(path, device=device)
     if kind not in MLP_ARCH_KINDS:
         raise ObjectiveError(
             f"{path} records arch.kind={kind!r}, which this loader does not know how to rebuild "
-            f"(expected one of {', '.join(MLP_ARCH_KINDS)}, or {LM_LORA_ARCH_KIND!r}). Refusing "
+            f"(expected one of {', '.join(MLP_ARCH_KINDS)}, {LM_LORA_ARCH_KIND!r} or "
+            f"{LM_FULL_ARCH_KIND!r}). Refusing "
             "rather than guessing: a policy rebuilt to the wrong shape would score as a broken "
             "one and be read as a bad reward."
         )
@@ -316,6 +325,14 @@ def _render_command(
     return " ".join(parts)
 
 
+def _default_device() -> str:
+    """A GPU when one exists. See `evaluate`'s device note."""
+    try:
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:  # noqa: BLE001 - a broken driver is still a CPU answer
+        return "cpu"
+
+
 def evaluate(
     spec: EnvironmentSpec,
     checkpoint_path: str | os.PathLike,
@@ -326,7 +343,7 @@ def evaluate(
     search_path: str | os.PathLike | None = None,
     manifest: str | os.PathLike | None = None,
     bank_size: int = SEED_BANK_SIZE,
-    device: str = "cpu",
+    device: str = "",
 ) -> ObjectiveScore:
     """Score a checkpoint against the manifest's objective.
 
@@ -349,10 +366,34 @@ def evaluate(
             f"objective.evaluator {spec.objective.evaluator!r} is not callable"
         )
 
-    policy = load_checkpoint_policy(checkpoint_path, device=device)
+    # "" means pick: a GPU if there is one. The default used to be "cpu",
+    # which is harmless for a two-layer MLP and fatal for an 8.77B
+    # vision-language policy -- a forward per decision takes seconds on CPU, so
+    # a 40-match evaluation would not have finished inside the run's deadline,
+    # and the symptom would have been an evaluation that simply never returned.
+    resolved = device or _default_device()
+    policy = load_checkpoint_policy(checkpoint_path, device=resolved)
 
     modes: dict[str, dict[str, Any]] = {}
+    # Both modes by default, because the gap between them is diagnostic: a
+    # policy strong at the argmax and random while sampling is sharp, and the
+    # reverse means the argmax has collapsed onto one action. But each mode is
+    # a full pass over the match budget, and for an environment where one
+    # decision costs a quarter of a second of emulator time that is the
+    # difference between a 20-minute screen and a 40-minute one -- so a
+    # manifest may ask for one.
+    wanted = merged_budget.get("modes") or ("deterministic", "stochastic")
+    if isinstance(wanted, str):
+        wanted = (wanted,)
+    unknown = set(wanted) - {"deterministic", "stochastic"}
+    if unknown:
+        raise ObjectiveError(
+            f"objective.budget.modes has unknown entries {sorted(unknown)}; "
+            "expected deterministic and/or stochastic"
+        )
     for mode_name, mode_flag in (("deterministic", True), ("stochastic", False)):
+        if mode_name not in wanted:
+            continue
         policy.deterministic = mode_flag
         policy.reseed(seed)
         raw = _call_evaluator(
@@ -362,7 +403,10 @@ def evaluate(
         value, n, detail = _normalise(raw, f"{spec.objective.evaluator} ({mode_name})")
         modes[mode_name] = {"value": value, "n": n, **detail}
 
-    chosen = modes["deterministic" if deterministic else "stochastic"]
+    preferred = "deterministic" if deterministic else "stochastic"
+    # If the manifest asked for only the other mode, report that rather than
+    # raising: the caller asked for a cheaper evaluation, not a failed one.
+    chosen = modes.get(preferred) or next(iter(modes.values()))
     manifest_path = str(manifest) if manifest else _guess_manifest(search_path)
     command = _render_command(
         manifest=manifest_path,
@@ -379,11 +423,16 @@ def evaluate(
         "evaluator": spec.objective.evaluator,
         "mode": "deterministic" if deterministic else "stochastic",
         "modes": modes,
-        "mode_gap": modes["deterministic"]["value"] - modes["stochastic"]["value"],
+        # Only meaningful when both were measured.
+        "mode_gap": (
+            modes["deterministic"]["value"] - modes["stochastic"]["value"]
+            if len(modes) == 2 else None
+        ),
         "seeds": list(seeds),
         "budget": merged_budget,
         "checkpoint": str(Path(checkpoint_path).resolve()),
         "arch": policy.arch,
+        "device": resolved,
     }
     return ObjectiveScore(
         value=float(chosen["value"]), n=int(chosen["n"]), detail=detail, command=command

@@ -7,6 +7,7 @@ import pytest
 
 from autobranch.consolidate import (
     ConsolidationError, consolidate, losers, rank_branches, reward_lineage, select_winner,
+    weights_note,
 )
 from autobranch.spec import EnvironmentSpec
 
@@ -205,3 +206,63 @@ def test_serve_snippet_resolves_the_checkpoint_from_the_manifest(payload, object
     # No literal checkpoint name inside the executable load path.
     load_line = next(l for l in text.splitlines() if "weights" in l and "/" in l and "ckpt" in l)
     assert "step_100.pt" not in load_line
+
+
+def test_the_artifact_says_where_a_full_finetune_keeps_its_weights(payload, objective, tmp_path):
+    """`grpo_full` writes `"policy": {}` on purpose, so its record is not its model.
+
+    16 GiB of tensors inside a pickle would double the artifact and could not be
+    loaded by anything but this framework, so the weights live in an HF export
+    on the Volume. The consequence is the dangerous kind: an artifact that
+    copied only the record would be well-formed, list every file anyone
+    expected, and contain no weights -- the MISSING.txt failure without the
+    announcement.
+
+    The note is therefore written unconditionally, and must name the trainer,
+    the volume path and the command that fetches it.
+    """
+    payload["spec"] = {**payload["spec"], "trainer": "grpo_full"}
+    out = tmp_path / "artifact"
+    index = consolidate(payload, objective, out_dir=str(out))
+
+    assert "weights/WEIGHTS.md" in {f["name"] for f in index["files"]}
+    note = (out / "weights" / "WEIGHTS.md").read_text()
+    assert "grpo_full" in note
+    assert "runs/run-abc123/b0.1/hf/" in note, note
+    assert "modal volume get autobranch-data" in note, note
+    assert "record" in note.lower()
+
+
+def test_the_weights_note_tells_the_truth_for_each_trainer():
+    """Inline for ppo and grpo_lora, on the Volume for grpo_full.
+
+    An unconditional note is only safe if it is right in every case. One that
+    told a `ppo` user to fetch a nonexistent HF export would be worse than no
+    note at all.
+    """
+    winner = select_winner(
+        {"branches": [{"branch_id": "b0", "status": "succeeded", "scores": [{"step": 1, "score": 0.9}],
+                       "reward_config": {}, "checkpoint": "/w/latest.pt", "steps_done": 1}]},
+        _Obj(),
+    )
+
+    full = weights_note({"run_id": "r", "spec": {"trainer": "grpo_full"}}, winner, "latest.pt")
+    assert "16 GiB" in full and "hf/" in full
+
+    lora = weights_note({"run_id": "r", "spec": {"trainer": "grpo_lora"}}, winner, "latest.pt")
+    assert "inline" in lora and "base model" in lora
+    assert "modal volume get" not in lora, "a LoRA checkpoint is standalone"
+
+    ppo = weights_note({"run_id": "r", "spec": {"trainer": "ppo"}}, winner, "latest.pt")
+    assert "plain torch" in ppo
+    assert "hf/" not in ppo, "ppo has no HF export to point at"
+
+
+class _Obj:
+    """Minimal objective: maximize, which is all select_winner needs."""
+
+    direction = "maximize"
+    sign = 1.0
+
+    def better(self, a, b):
+        return a > b

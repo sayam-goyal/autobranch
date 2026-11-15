@@ -466,16 +466,10 @@ class BranchRunner:
             metrics["steps_per_second"] = steps / wall
         self.state.last_metrics = metrics
 
-        if self.ledger is not None:
-            try:
-                self.ledger.record_compute(
-                    seconds=elapsed, gpu=self.spec.resources.gpu,
-                    cpu=self.spec.resources.cpu, memory_mib=self.spec.resources.memory,
-                    branch_id=self.env.branch_id,
-                )
-                self.ledger.commit()
-            except Exception:  # noqa: BLE001
-                pass
+        # Compute is NOT recorded here any more. `start_compute_biller` bills
+        # the sandbox's wall clock continuously, and billing again per call
+        # would charge the same seconds twice -- training time is already
+        # inside the interval the biller measured.
         self._sync_spend()
         self._persist()
         self._event(f"trained {steps} steps in {elapsed:.0f}s (total {self.state.steps_done})")
@@ -722,6 +716,54 @@ class BranchRunner:
                 "branch_id": self.env.branch_id}
 
 
+def start_compute_biller(ledger, spec, branch_id: str, *, every: float = 60.0):
+    """Bill the sandbox's wall clock continuously, in the background.
+
+    `_tool_train` records compute when a train call *returns*, which is wrong in
+    two ways that compound. A 50-minute call bills nothing until it finishes, so
+    the UI shows stale spend while real money burns -- measured at $0.01 against
+    a true $2.41, understated 241x. And if the sandbox is **preempted mid-call
+    it bills nothing, ever**: a preempted run cost ~$4.56 and was never recorded
+    at all.
+
+    The second one is the serious one. The budget cap is enforced against the
+    ledger, so unbilled time is time the cap cannot see -- which makes "hard
+    ceilings, decremented centrally" untrue exactly when it matters, because
+    preemption is the case where a run is most likely to be relaunched and
+    spend again.
+
+    A sandbox burns money continuously, so billing is continuous: a daemon
+    thread records the interval since its last mark every `every` seconds. The
+    thread is a daemon and every failure is swallowed, because accounting must
+    never be the reason a branch dies -- but it marks time before sleeping, so a
+    crash mid-interval loses at most one interval rather than double-billing.
+    """
+    import threading
+    import time as _time
+
+    def loop() -> None:
+        last = _time.time()
+        while True:
+            _time.sleep(every)
+            now = _time.time()
+            seconds, last = now - last, now
+            if seconds <= 0:
+                continue
+            try:
+                ledger.record_compute(
+                    seconds=seconds, gpu=spec.resources.gpu,
+                    cpu=spec.resources.cpu, memory_mib=spec.resources.memory,
+                    branch_id=branch_id, note="sandbox uptime",
+                )
+                ledger.commit()
+            except Exception:  # noqa: BLE001 - never kill a branch over accounting
+                pass
+
+    thread = threading.Thread(target=loop, name="compute-biller", daemon=True)
+    thread.start()
+    return thread
+
+
 def main(argv: list[str] | None = None) -> int:
     """Sandbox entrypoint: `python -m autobranch.branch_main`.
 
@@ -758,6 +800,11 @@ def main(argv: list[str] | None = None) -> int:
         return objective_evaluate(**kw)
 
     from autobranch.forking import make_forker
+
+    # Bill continuously from here on: the agent loop can sit inside one train
+    # call for an hour, and a preempted sandbox never reaches the code that
+    # would have billed it.
+    start_compute_biller(ledger, spec, env.branch_id)
 
     runner = BranchRunner(
         env=env, spec=spec, agent=agent, registry=registry,

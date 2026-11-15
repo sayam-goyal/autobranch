@@ -27,13 +27,19 @@
   var TICK_MS = 1000;
 
   var LIVE_STATES = { pending: true, running: true, evaluating: true };
+  /* Every status the server can send, run-level and branch-level both.
+     registry.py: RUN_STATES = pending|running|succeeded|failed|stopped and
+     STATUSES = pending|running|evaluating|abandoned|succeeded|failed. A status
+     missing from here does not merely sort oddly -- see `statusClass`. */
   var STATUS_ORDER = {
     running: 0,
     evaluating: 1,
     pending: 2,
     succeeded: 3,
     abandoned: 4,
-    failed: 5
+    stopped: 5,
+    failed: 6,
+    unknown: 7
   };
 
   /* One poller at a time, ever. `generation` invalidates in-flight responses
@@ -184,8 +190,15 @@
   /* `plural` just adds an "s"; a few words in this UI need a real plural. */
   function pluralise(n, one, many) { return n + " " + (n === 1 ? one : many); }
 
+  /* An unrecognised status must never resolve to a *live* one.
+     This returned "pending" for anything it did not know, and `stopped` -- a
+     real run state the server emits -- was missing from STATUS_ORDER. So four
+     stopped runs rendered as "starting", and because LIVE_STATES.pending is
+     true the UI also treated them as live: pulsing, and polled forever. A
+     terminal run displayed as a starting one is the most misleading default
+     available, so the fallback is now terminal and visibly unknown. */
   function statusClass(status) {
-    return STATUS_ORDER[status] === undefined ? "pending" : status;
+    return STATUS_ORDER[status] === undefined ? "unknown" : status;
   }
 
   function isTerminalRun(runState) { return !LIVE_STATES[runState]; }
@@ -247,6 +260,7 @@
 
   function statusLabel(run, status) {
     var s = statusClass(status);
+    if (s === "unknown") { return "unknown"; }
     if (s !== "pending") { return s; }
     return LIVE_STATES[run && run.state] ? "starting" : "never started";
   }

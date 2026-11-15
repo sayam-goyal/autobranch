@@ -291,12 +291,56 @@ def find_manifest(root: str) -> str | None:
     return None
 
 
+#: Distributions whose import name is not their package name. Guessing by
+#: normalising hyphens covers most of PyPI and silently fails for exactly the
+#: ones a bundle is most likely to declare: `pillow` imports as `PIL`, which is
+#: what rejected the first real SF3 submission for a dependency its manifest
+#: had correctly declared.
+_MODULE_ALIASES = {
+    "pillow": "PIL",
+    "pillow_simd": "PIL",
+    "opencv_python": "cv2",
+    "opencv_python_headless": "cv2",
+    "scikit_learn": "sklearn",
+    "scikit_image": "skimage",
+    "pyyaml": "yaml",
+    "python_dateutil": "dateutil",
+    "protobuf": "google",
+    "attrs": "attr",
+    "beautifulsoup4": "bs4",
+    "msgpack_python": "msgpack",
+    "hugging_face_hub": "huggingface_hub",
+    "mametoolkit": "MAMEToolkit",
+}
+
+
 def _dist_to_module(requirement: str) -> str:
     """The module name a pip requirement most likely provides."""
     out = requirement.strip().lower()
     for sep in ("[", "==", ">=", "<=", "~=", "!=", ">", "<", ";", " "):
         out = out.split(sep, 1)[0]
-    return out.strip().replace("-", "_")
+    out = out.strip().replace("-", "_")
+    return _MODULE_ALIASES.get(out, out)
+
+
+_MISSING_MODULE_RE = re.compile(r"No module named '([^']+)'")
+
+
+def _missing_declared(problems: Iterable[str], declared: set[str]) -> set[str]:
+    """Declared dependencies that a validation failure blamed a missing import on.
+
+    Returns the modules, so the caller can say which ones deferred validation
+    rather than reporting "something was missing". Only names the manifest
+    actually declared count: a genuinely undeclared import is still the
+    submitter's bug and must stay blocking.
+    """
+    out: set[str] = set()
+    for problem in problems:
+        for match in _MISSING_MODULE_RE.finditer(str(problem)):
+            root = match.group(1).split(".")[0]
+            if root in declared:
+                out.add(root)
+    return out
 
 
 def check_env(spec: EnvironmentSpec, bundle_dir: str) -> tuple[list[str], list[str]]:
@@ -340,6 +384,18 @@ def check_env(spec: EnvironmentSpec, bundle_dir: str) -> tuple[list[str], list[s
             found = validate_env(env, spec)
         except Exception as exc:  # noqa: BLE001 - a validator crash is still a bad bundle
             return [f"validate_env crashed on this environment: {type(exc).__name__}: {exc}"], []
+
+        # The same deferral as above, for a dependency imported lazily rather
+        # than at module scope. An environment that imports PIL inside the
+        # function that decodes a frame constructs perfectly well here and then
+        # fails on reset, so checking only `load_env` catches the eager case and
+        # rejects the lazy one -- for a dependency the manifest declared.
+        deferred = _missing_declared(found, declared)
+        if deferred:
+            return [], [
+                f"environment not stepped here (needs {', '.join(sorted(deferred))}, declared "
+                "in image.pip); the branch container will"
+            ]
         return blocking(found), [p for p in found if p.startswith(ADVISORY)]
     finally:
         close = getattr(env, "close", None)
@@ -566,6 +622,42 @@ def _request_finalize(run_id: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# seeded runs
+# ---------------------------------------------------------------------------
+
+def _seeded_runs(enabled: bool = True) -> dict[str, Any]:
+    """Pre-loaded runs, served alongside live ones.
+
+    Two searches, whose measurements are real -- each module's PROVENANCE block
+    states exactly which parts are measured and which are reconstructed. Served
+    through the same API and renderer as a live run, so the artifact path is
+    exercised rather than mocked.
+
+    Both are here on purpose, because they disagree. Rocket League found the
+    reward was everything: one weight moved the objective 24 points. Tetris
+    found the reward was a null -- six configurations across two rewrites, all
+    exactly 0.000 -- and that what mattered was a representation change a reward
+    search cannot reach. A framework that only ships the case where it won is
+    not telling anyone anything.
+
+    Each module is independent and any failure to import one must not take the
+    other with it, so they are loaded separately.
+    """
+    if not enabled:
+        return {}
+    out: dict[str, Any] = {}
+    for name in ("seed_runs", "seed_runs_tetris"):
+        try:
+            import importlib
+
+            module = importlib.import_module(f"autobranch.{name}")
+            out[module.RUN_ID] = module
+        except Exception:  # noqa: BLE001 - absence must never break the API
+            continue
+    return out
+
+
 def _volume_artifact(run_id: str) -> dict[str, Any] | None:
     """Read an artifact straight off the Volume.
 
@@ -773,6 +865,7 @@ def build_api(
     *,
     launcher: Callable[[EnvironmentSpec, Constraints, Budget, str], Any] | None = None,
     artifact_root: str | None = None,
+    seeded: bool | None = None,
 ) -> Any:
     """The FastAPI app. A factory so tests inject their own state and launcher.
 
@@ -792,6 +885,10 @@ def build_api(
     api.state.registry = reg
     api.state.artifact_root = artifacts
     api.state.bundle_root = bundles
+    # Seeded runs are served alongside live ones, but a caller that injected
+    # its own registry is asserting on a controlled world -- tests must see
+    # exactly the runs they created and nothing else.
+    api.state.seeded = (registry is None) if seeded is None else bool(seeded)
 
     def _run_or_404(run_id: str):
         run = reg.get_run(run_id)
@@ -824,7 +921,7 @@ def build_api(
 
     @api.get("/api/runs")
     def list_runs():
-        runs = []
+        runs = [mod.summary() for mod in _seeded_runs(api.state.seeded).values()]
         for run in reg.list_runs():
             best = run.best or {}
             runs.append(
@@ -842,11 +939,35 @@ def build_api(
 
     @api.get("/api/runs/{run_id}")
     def get_run(run_id: str):
+        seeded = _seeded_runs(api.state.seeded).get(run_id)
+        if seeded is not None:
+            return seeded.api_payload()
         _run_or_404(run_id)
         return reg.api_payload(run_id)
 
     @api.get("/api/runs/{run_id}/artifact")
     def get_artifact(run_id: str):
+        seeded = _seeded_runs(api.state.seeded).get(run_id)
+        if seeded is not None:
+            # `artifact_files()` is the whole tree, weights included, so the
+            # weights entry is only appended when a module does not already
+            # carry it. Appending unconditionally listed policy.pt twice.
+            tree = dict(seeded.artifact_files())
+            tree.setdefault("weights/policy.pt", seeded.weights_blob())
+            files = [
+                {"name": name, "bytes": len(blob),
+                 "url": f"/api/runs/{run_id}/artifact/{os.path.basename(name)}"}
+                for name, blob in sorted(tree.items())
+            ]
+            m = seeded.manifest()
+            return {
+                "ready": True,
+                "files": sorted(files, key=lambda f: f["name"]),
+                "run_command": m["run_command"],
+                "best": {"branch_id": m["winner"]["branch_id"],
+                         "score": m["objective"]["score"],
+                         "objective": m["objective"]["name"]},
+            }
         run = _run_or_404(run_id)
         listing = artifact_listing(run_id, api.state.artifact_root)
 
@@ -878,6 +999,30 @@ def build_api(
 
     @api.get("/api/runs/{run_id}/artifact/{filename}")
     def get_artifact_file(run_id: str, filename: str):
+        seeded = _seeded_runs(api.state.seeded).get(run_id)
+        if seeded is not None:
+            # Matched by basename, exactly as `resolve_artifact_file` does for a
+            # real run: the listing names files by their path in the tree
+            # (`weights/policy.pt`) while the route carries one segment, so a
+            # seeded artifact has to resolve the same way a real one does or the
+            # demo would exercise a path the product does not have.
+            files = dict(seeded.artifact_files())
+            files.setdefault("weights/policy.pt", seeded.weights_blob())
+            blob = files.get(filename)
+            if blob is None:
+                for name, data in files.items():
+                    if os.path.basename(name) == filename:
+                        blob = data
+                        break
+            if blob is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"{filename!r} is not in the artifact for {run_id}",
+                )
+            return Response(
+                content=blob, media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
         _run_or_404(run_id)
         try:
             path = resolve_artifact_file(run_id, filename, api.state.artifact_root)
@@ -919,7 +1064,18 @@ def build_api(
         path = os.path.join(directory, name)
         if not os.path.isfile(path):
             raise HTTPException(status_code=404, detail=f"no such asset {name!r}")
-        return FileResponse(path, media_type=FRONTEND_FILES[name])
+        # `no-cache` means "revalidate", not "do not store": the ETag below
+        # still turns a reload into a 304 with no body. Without it the response
+        # carries only ETag and Last-Modified, so a browser applies *heuristic*
+        # freshness and may serve a stale asset without asking -- which is what
+        # happened when a frontend fix was deployed and the page kept rendering
+        # the old behaviour. An app whose fixes require the user to know about
+        # hard-refresh is an app that ships bugs it has already fixed.
+        return FileResponse(
+            path,
+            media_type=FRONTEND_FILES[name],
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
     @api.get("/")
     def index():
@@ -937,8 +1093,13 @@ def build_api(
 
 
 def build_app() -> Any:
-    """The real app: Modal-backed registry, volume paths, deployed launcher."""
-    return build_api(Registry(), launcher=modal_launcher)
+    """The real app: Modal-backed registry, volume paths, deployed launcher.
+
+    `seeded=True` is explicit because this path passes a registry, and the
+    default infers "a caller with its own registry is a test". Production
+    wants both the live runs and the pre-loaded ones.
+    """
+    return build_api(Registry(), launcher=modal_launcher, seeded=True)
 
 
 def modal_launcher(spec: EnvironmentSpec, constraints: Constraints, budget: Budget,

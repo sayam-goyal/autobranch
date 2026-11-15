@@ -546,3 +546,48 @@ def test_exec_json_raises_when_no_json_is_emitted(sandboxes):
 
     with pytest.raises(B.ExecError, match="no JSON"):
         B.exec_json(sandbox, ["python", "train.py"], timeout=10)
+
+
+def test_compute_is_billed_continuously_not_only_when_a_call_returns():
+    """A sandbox burns money every second, so billing has to be every second.
+
+    `_tool_train` used to record compute when a train call returned. Two
+    failures compounded from that. A 50-minute call billed nothing until it
+    finished, so the ledger read $0.01 against a true $2.41 -- understated
+    241x. And a sandbox **preempted mid-call never reached the billing code at
+    all**: one preempted run cost ~$4.56 and was never recorded.
+
+    The second is the serious one, because the budget cap is enforced against
+    the ledger. Unbilled time is time the cap cannot see, which makes "hard
+    ceilings, decremented centrally" false exactly when it matters.
+    """
+    import inspect
+
+    from autobranch import branch_main
+
+    # The biller exists and runs on a timer.
+    assert hasattr(branch_main, "start_compute_biller")
+    src = inspect.getsource(branch_main.start_compute_biller)
+    assert "daemon=True" in src, "accounting must not keep a branch alive"
+    assert "sandbox uptime" in src
+
+    # And the per-call record is gone, or the same seconds get charged twice.
+    train_src = inspect.getsource(branch_main.BranchRunner._tool_train)
+    assert "record_compute" not in train_src, (
+        "billing per call on top of continuous billing double-charges training time"
+    )
+
+
+def test_the_biller_marks_time_before_sleeping():
+    """It must not double-bill an interval it already charged.
+
+    The mark is advanced in the same statement that computes the interval, so
+    a failure inside `record_compute` loses at most one interval instead of
+    charging it again on the next pass.
+    """
+    import inspect
+
+    from autobranch import branch_main
+
+    src = inspect.getsource(branch_main.start_compute_biller)
+    assert "seconds, last = now - last, now" in src, src

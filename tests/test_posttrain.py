@@ -1499,3 +1499,40 @@ def lm_policy_module_path() -> str:
     from autobranch import lm_policy
 
     return lm_policy.__file__
+
+
+def test_a_vision_processor_is_left_padded_before_use():
+    """The action head reads `logits[:, -1, :]`, so padding side is correctness.
+
+    Under right padding that position is a PAD token for every row shorter than
+    the batch's longest, and it moves as the batch changes. The bug this guards
+    was caught by its own signature: a first-epoch importance ratio of 0.377
+    where it must be 1.000, because collection batched 8 lanes and the update
+    batched 4. The gradient looked healthy and meant nothing.
+    """
+    import types
+
+    from autobranch import lm_policy
+
+    tokenizer = types.SimpleNamespace(padding_side="right", pad_token=None, eos_token="<eos>")
+    processor = types.SimpleNamespace(tokenizer=tokenizer, padding_side="right")
+
+    out = lm_policy.prepare_vision_processor(processor)
+
+    assert out is processor
+    assert tokenizer.padding_side == "left"
+    assert processor.padding_side == "left"
+    # A model without a pad token borrows its eos, which is what makes a
+    # ragged batch paddable at all.
+    assert tokenizer.pad_token == "<eos>"
+
+
+def test_a_processor_with_no_pad_and_no_eos_is_refused():
+    """Better to fail naming the cause than to pad with token id 0."""
+    import types
+
+    from autobranch import lm_policy
+
+    tokenizer = types.SimpleNamespace(padding_side="right", pad_token=None, eos_token=None)
+    with pytest.raises(lm_policy.PostTrainError, match="neither a pad token nor an eos token"):
+        lm_policy.prepare_vision_processor(types.SimpleNamespace(tokenizer=tokenizer))

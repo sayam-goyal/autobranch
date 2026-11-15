@@ -21,7 +21,14 @@ SIGNAL_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 ENTRYPOINT_RE = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_]\w*$")
 
 SignalType = Literal["float", "int", "bool"]
-TrainerKind = str  # "ppo" | "grpo_lora" | "custom:module:fn"
+TrainerKind = str  # "ppo" | "grpo_lora" | "grpo_full" | "custom:module:fn"
+
+#: The built-in trainers. `grpo_full` updates every parameter of a base model;
+#: `grpo_lora` updates an adapter over one. Both are critic-free and
+#: group-relative -- they differ in what they are allowed to write to, not in
+#: the RL method, so a bundle picks between them on memory and fidelity rather
+#: than on algorithm.
+BUILTIN_TRAINERS = ("ppo", "grpo_lora", "grpo_full")
 
 
 class SpecError(ValueError):
@@ -277,9 +284,9 @@ class EnvironmentSpec:
         )
         trainer = str(_get(raw, "trainer", "manifest", default="ppo"))
         _require(
-            trainer in ("ppo", "grpo_lora") or trainer.startswith("custom:"),
+            trainer in BUILTIN_TRAINERS or trainer.startswith("custom:"),
             "manifest.trainer",
-            f"expected ppo|grpo_lora|custom:module:fn, got {trainer!r}",
+            f"expected {'|'.join(BUILTIN_TRAINERS)}|custom:module:fn, got {trainer!r}",
         )
 
         return EnvironmentSpec(
@@ -368,5 +375,11 @@ def with_base_model(spec: EnvironmentSpec, base_model: str) -> EnvironmentSpec:
     import dataclasses
 
     policy = dataclasses.replace(spec.policy, base_model=base_model)
+    # Only a bundle that declared no post-training at all gets a default, and
+    # the default is the adapter: it is the one that fits on a single GPU. A
+    # bundle that asked for `grpo_full` keeps it -- "must posttrain X" says
+    # which weights to start from, never how much of them to update, and
+    # silently turning a full fine-tune into a LoRA run would answer a
+    # different question than the one the manifest asked.
     trainer = "grpo_lora" if spec.trainer == "ppo" else spec.trainer
     return dataclasses.replace(spec, policy=policy, trainer=trainer)
