@@ -143,7 +143,14 @@ class FullHyper:
     epochs: int = 1
     clip: float = 0.2
     max_grad_norm: float = 0.5
-    entropy_coef: float = 0.0
+    #: Small but nonzero. The probe measured 0.41 nats of action entropy once
+    #: the menu was in the prompt -- against ln(40) = 3.69 available -- so the
+    #: base model arrives with a strong opinion about what to do. That is the
+    #: point of starting from a pretrained VL model, but the predecessor
+    #: project found its policy was "only competent while sampling" and
+    #: collapsed to 0/100 at the mode, so a run with ~54 iterations cannot
+    #: afford to sharpen further before it has explored.
+    entropy_coef: float = 0.01
     temperature: float = 1.0
     gamma: float = 0.995
     #: Hinh discounted the round outcome on a 3600-frame half-life. Kept as a
