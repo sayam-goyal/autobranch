@@ -523,3 +523,58 @@ def test_a_plain_zip_url_is_fetched_and_accepted(launcher, tmp_path):
     assert body.run_id.startswith("run-")
     assert os.path.isfile(body.bundle_path)
     assert len(launcher.calls) == 1
+
+
+def test_a_real_runs_nested_artifact_file_downloads_by_basename(client, registry, artifacts):
+    """`consolidate` writes the checkpoint under `weights/`, so the listing
+    names it `weights/latest.pt` while the download route carries one path
+    segment and matches by basename -- the traversal surface is an enumerated
+    tree, never a path joined from a request.
+
+    This pins that a file in a subdirectory is actually reachable. It was not:
+    the UI sent the full name, encodeURIComponent turned the slash into %2F,
+    the request matched no route, and every file under `weights/` 404'd -- the
+    one file a run exists to produce. Fetching a known basename directly is
+    what let that survive earlier checks, because the bug was in the
+    relationship between the two endpoints rather than in either one.
+    """
+    import os
+
+    run_id = submit_good(client)
+    directory = os.path.join(artifacts, run_id)
+    os.makedirs(os.path.join(directory, "weights"), exist_ok=True)
+    with open(os.path.join(directory, "weights", "latest.pt"), "wb") as fh:
+        fh.write(b"not-a-real-checkpoint-but-real-bytes")
+    with open(os.path.join(directory, "manifest.json"), "w") as fh:
+        fh.write('{"ok": true}')
+
+    listing = client.get(f"/api/runs/{run_id}/artifact").json()
+    names = {f["name"] for f in listing["files"]}
+    assert "weights/latest.pt" in names, names
+
+    for entry in listing["files"]:
+        leaf = os.path.basename(entry["name"])
+        got = client.get(f"/api/runs/{run_id}/artifact/{leaf}")
+        assert got.status_code == 200, f"{entry['name']} -> {got.status_code} {got.text[:120]}"
+        assert len(got.content) == entry["bytes"]
+
+    # The full path stays refused, which is what keeps traversal impossible:
+    # the client strips the directory and the server never rejoins one.
+    assert client.get(f"/api/runs/{run_id}/artifact/weights%2Flatest.pt").status_code == 404
+
+
+def test_the_frontend_requests_artifact_files_by_basename():
+    """Pins the client half of the contract above.
+
+    The server's basename matching is deliberate, so the client has to strip
+    the directory. A server-only test passes while the UI download button is
+    broken, which is exactly what happened.
+    """
+    import pathlib
+
+    app_js = pathlib.Path(__file__).resolve().parents[1] / "frontend" / "app.js"
+    source = app_js.read_text()
+    assert 'split("/").pop()' in source, "app.js must request the basename"
+    assert "encodeURIComponent(file.name)" not in source, (
+        "encoding the full name percent-encodes the slash and matches no route"
+    )
