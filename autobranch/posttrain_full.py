@@ -736,15 +736,28 @@ def train(
             if durable_metrics is not None:
                 with durable_metrics.open("a") as fh:
                     fh.write(payload)
+            # The workspace copy advances every iteration: it dies with the
+            # sandbox anyway and is only read when the durable one is absent.
             state_path.write_text(json.dumps(progress))
-            try:
-                durable_state.write_text(json.dumps(progress))
-            except OSError:
-                pass
-            # Crash insurance only; the export that matters is written below,
-            # before returning, because that is when the evaluator reads it.
+
+            # The durable copy advances ONLY with the export, and strictly
+            # after it. Those two describe the same thing -- "where training
+            # got to" -- and letting them disagree is a silent correctness
+            # bug: progress written every iteration against an export written
+            # every `save_every` means a death on an odd iteration resumes
+            # with iteration-4 weights while believing it is at iteration 5,
+            # and trains that much less than the step target implies.
+            #
+            # Export first, then progress. A crash between them leaves
+            # progress *behind* the weights, so a resume redoes an iteration.
+            # The other order would skip one, and redoing work is recoverable
+            # in a way that skipping it is not.
             if hyp.save_every and iteration % hyp.save_every == 0:
                 save_hf_export(model, processor, export_dir)
+                try:
+                    durable_state.write_text(json.dumps(progress))
+                except OSError:
+                    pass
             last = line
     finally:
         if env is None and environment is not None:
@@ -755,8 +768,13 @@ def train(
 
     # Always export before returning: `train` returning is the signal that a
     # checkpoint exists to be scored, and an evaluator that loads a stale
-    # export would measure a policy from several iterations ago.
+    # export would measure a policy from several iterations ago. Progress
+    # follows it, for the same reason it does inside the loop.
     save_hf_export(model, processor, export_dir)
+    try:
+        durable_state.write_text(json.dumps(progress))
+    except OSError:
+        pass
 
     torch = _import_or_explain("torch", "torch>=2.2")
     checkpoint = ws / "checkpoints" / "latest.pt"

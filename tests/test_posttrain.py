@@ -1536,3 +1536,40 @@ def test_a_processor_with_no_pad_and_no_eos_is_refused():
     tokenizer = types.SimpleNamespace(padding_side="right", pad_token=None, eos_token=None)
     with pytest.raises(lm_policy.PostTrainError, match="neither a pad token nor an eos token"):
         lm_policy.prepare_vision_processor(types.SimpleNamespace(tokenizer=tokenizer))
+
+
+def test_durable_progress_advances_only_with_the_export():
+    """Resume state and resume weights must describe the same moment.
+
+    `progress.json` was written every iteration while the export was written
+    every `save_every`. A death on an odd iteration then resumed with
+    iteration-4 weights while believing it was at iteration 5 -- training that
+    much less than the step target implies, with nothing logged.
+
+    Order is part of the fix: export first, then progress. A crash between them
+    leaves progress *behind* the weights, so a resume redoes an iteration;
+    the other order skips one, and redone work is recoverable in a way that
+    skipped work is not.
+    """
+    import inspect
+    import re
+
+    from autobranch import posttrain_full
+
+    src = inspect.getsource(posttrain_full.train)
+
+    # The durable write must be inside the save_every branch, after the export.
+    block = re.search(
+        r"if hyp\.save_every and iteration % hyp\.save_every == 0:(.*?)last = line",
+        src, re.S)
+    assert block, "the periodic-save branch moved"
+    body = block.group(1)
+    assert "save_hf_export" in body
+    assert "durable_state.write_text" in body
+    assert body.index("save_hf_export") < body.index("durable_state.write_text"), (
+        "progress must be written after the export, never before"
+    )
+
+    # And the workspace copy still advances every iteration -- it is the
+    # fallback when no durable state exists at all.
+    assert "state_path.write_text(json.dumps(progress))" in src
