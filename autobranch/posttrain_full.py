@@ -136,12 +136,18 @@ class FullHyper:
     #: all of its wall clock in backward passes over correlated samples from
     #: the same few matches.
     train_subsample: int = 256
-    #: Export every N iterations, and always before returning. A full export is
-    #: ~17 GiB across four safetensors shards and cost ~60 s of every 772 s
-    #: iteration. The export is only *needed* when train() returns, because
-    #: that is when the evaluator loads it; in between it is crash insurance,
-    #: and 5 is what the reproduction target used for the same reason.
-    save_every: int = 5
+    #: Export every N iterations, and always before returning.
+    #:
+    #: This was 5, reasoning that an export is only *needed* when train()
+    #: returns because that is when the evaluator loads it, and that in between
+    #: it is mere crash insurance worth ~60 s of every ~750 s iteration. Then a
+    #: run was preempted on iteration 4 and lost all three of its completed
+    #: iterations, because no export had been written yet.
+    #:
+    #: On preemptible hardware checkpoint frequency is not insurance, it is the
+    #: bound on how much work a preemption can destroy. At 2 the worst case is
+    #: ~25 minutes instead of ~an hour, for 8% of the wall clock rather than 4%.
+    save_every: int = 2
     #: Where the HF export and a mirrored metrics log go. Empty means derive it
     #: from AUTOBRANCH_DATA_ROOT/RUN_ID/BRANCH_ID, which is what a real branch
     #: wants; a probe or a local test passes an explicit path.
@@ -583,12 +589,20 @@ def train(
         )
     base_path = ensure_base_model(base_model)
 
+    # Progress is read from the Volume first and the workspace second. The
+    # workspace copy dies with its sandbox, so after a preemption it is the
+    # durable one or nothing -- and "nothing" means silently restarting a
+    # four-hour run from zero, which is what happened once.
+    durable_state = durable / "progress.json"
     progress = {"step": 0, "iteration": 0}
-    if resume and state_path.is_file():
-        try:
-            progress.update(json.loads(state_path.read_text()))
-        except json.JSONDecodeError:
-            pass
+    if resume:
+        for candidate in (durable_state, state_path):
+            try:
+                if candidate.is_file():
+                    progress.update(json.loads(candidate.read_text()))
+                    break
+            except (json.JSONDecodeError, OSError):
+                continue
     # Resume from our own export when there is one: a full fine-tune's whole
     # state is its weights, so continuing from the base model would silently
     # discard every gradient step taken so far.
@@ -723,6 +737,10 @@ def train(
                 with durable_metrics.open("a") as fh:
                     fh.write(payload)
             state_path.write_text(json.dumps(progress))
+            try:
+                durable_state.write_text(json.dumps(progress))
+            except OSError:
+                pass
             # Crash insurance only; the export that matters is written below,
             # before returning, because that is when the evaluator reads it.
             if hyp.save_every and iteration % hyp.save_every == 0:
