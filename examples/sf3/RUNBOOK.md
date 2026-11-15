@@ -7,9 +7,9 @@ a restarted session must be able to continue without re-deriving anything.
 
 | what | value |
 |---|---|
-| run id | **`run-4342abbaad`** |
-| launched | 21:49:39 PST, epoch **1794721779** |
-| training deadline (5.5 h) | epoch **1794741579** ≈ 03:20 PST |
+| run id | **`run-a6ffd62451`** |
+| launched | 22:07:13 PST, epoch **1794722833** |
+| training deadline (4.75 h) | epoch **1794739933** ≈ 02:52 PST |
 | 8-hour envelope ends | epoch **1794748800** ≈ 05:40 PST |
 | bundle | `examples/sf3` (sf3-ryu v1) |
 | objective | `win_rate_vs_cpu8`, maximize |
@@ -28,6 +28,15 @@ a restarted session must be able to continue without re-deriving anything.
   because its env reused emulator lanes across collections, which the emulator
   cannot do and does not complain about. Branch sandbox and nine orphaned lanes
   terminated by hand.
+- `run-4342abbaad` (21:49) — **completed one healthy iteration**, and that
+  iteration is why this run is sized the way it is. Its numbers are kept in
+  `first_iteration.jsonl`: 6 rounds won / 0 lost across 8 lanes, damage dealt
+  2.4x damage taken, zero degenerate groups, ratio drift 0.0006 — and
+  `wall_seconds` 772 against a 264 s estimate. A decision costs ~1.0 s, not
+  0.25 s, because the VL forward adds ~0.75 s on top of the emulator. Replaced
+  to pick up evaluation concurrency 24 (one batch instead of three: ~27 min per
+  call instead of ~80), 400 decisions per collection, and an export every 5
+  iterations instead of every one.
 
 Both are the reason the probes exist: every one of those failures is silent.
 
@@ -35,19 +44,19 @@ Both are the reason the probes exist: every one of those failures is silent.
 
 ```bash
 # tree, scores, reward configs, stop reasons
-python examples/sf3/watch.py --run-id run-4342abbaad
+python examples/sf3/watch.py --run-id run-a6ffd62451
 
 # ...plus the per-branch training curves off the Volume
-python examples/sf3/watch.py --run-id run-4342abbaad --metrics
+python examples/sf3/watch.py --run-id run-a6ffd62451 --metrics
 
 # loop every two minutes
-python examples/sf3/watch.py --run-id run-4342abbaad --loop 120 --metrics
+python examples/sf3/watch.py --run-id run-a6ffd62451 --loop 120 --metrics
 
 # the framework's own status
-modal run app.py::cli_status --run-id run-4342abbaad
+modal run app.py::cli_status --run-id run-a6ffd62451
 
 # build the artifact (weights + lineage + losers), after training ends
-modal run app.py::cli_finalize --run-id run-4342abbaad
+modal run app.py::cli_finalize --run-id run-a6ffd62451
 ```
 
 ## Where the data is
@@ -56,8 +65,8 @@ Everything needed for post-hoc analysis is on the `autobranch-data` Volume,
 **not** in a sandbox:
 
 ```
-runs/run-4342abbaad/<branch>/metrics.jsonl    one line per training iteration
-runs/run-4342abbaad/<branch>/hf/              the full HF checkpoint (~16 GiB)
+runs/run-a6ffd62451/<branch>/metrics.jsonl    one line per training iteration
+runs/run-a6ffd62451/<branch>/hf/              the full HF checkpoint (~16 GiB)
 ```
 
 `/workspace` is sandbox-local, so anything left there dies with its branch.
