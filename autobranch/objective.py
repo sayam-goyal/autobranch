@@ -185,6 +185,10 @@ MLP_ARCH_KINDS = ("discrete", "continuous")
 #: shape it is, and which a hand-edited file could disagree with.
 LM_LORA_ARCH_KIND = "lm_lora_discrete"
 
+#: What `grpo_full` writes: every parameter updated, weights in an HF export
+#: beside the record rather than inline. Same duck type reaches the evaluator.
+LM_FULL_ARCH_KIND = "lm_full_discrete"
+
 
 def load_checkpoint_policy(
     checkpoint_path: str | os.PathLike, *, device: str = "cpu"
@@ -224,10 +228,15 @@ def load_checkpoint_policy(
         from autobranch import lm_policy
 
         return lm_policy.load_policy(path, device=device)
+    if kind == LM_FULL_ARCH_KIND:
+        from autobranch import lm_policy
+
+        return lm_policy.load_full_policy(path, device=device)
     if kind not in MLP_ARCH_KINDS:
         raise ObjectiveError(
             f"{path} records arch.kind={kind!r}, which this loader does not know how to rebuild "
-            f"(expected one of {', '.join(MLP_ARCH_KINDS)}, or {LM_LORA_ARCH_KIND!r}). Refusing "
+            f"(expected one of {', '.join(MLP_ARCH_KINDS)}, {LM_LORA_ARCH_KIND!r} or "
+            f"{LM_FULL_ARCH_KIND!r}). Refusing "
             "rather than guessing: a policy rebuilt to the wrong shape would score as a broken "
             "one and be read as a bad reward."
         )

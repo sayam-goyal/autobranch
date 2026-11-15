@@ -858,13 +858,22 @@ def trainer_for(spec: EnvironmentSpec) -> TrainFn:
         from autobranch import posttrain
 
         return posttrain.train
+    if kind == "grpo_full":
+        # Same reason as above, plus bitsandbytes. `grpo_full` updates every
+        # parameter of the base model rather than an adapter over it, which is
+        # what the reproduction target did; the RL method is identical.
+        from autobranch import posttrain_full
+
+        return posttrain_full.train
     if kind.startswith("custom:"):
         target = kind[len("custom:"):]
         fn = import_target(target)
         if not callable(fn):
             raise TypeError(f"custom trainer {target!r} resolved to a non-callable {type(fn)}")
         return fn
-    raise ValueError(f"unknown trainer {kind!r}; expected ppo | grpo_lora | custom:module:fn")
+    raise ValueError(
+        f"unknown trainer {kind!r}; expected ppo | grpo_lora | grpo_full | custom:module:fn"
+    )
 
 
 __all__ = [

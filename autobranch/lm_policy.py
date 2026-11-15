@@ -719,3 +719,135 @@ def load_policy(
         model = _adapter_from_record(peft, base, arch, (payload or {}).get("policy") or {})
     model.eval().to(device)
     return LoraPolicy(arch, model=model, tokenizer=tokenizer, device=device)
+
+
+# -------------------------------------------------------------------------
+# the vision policy an evaluator runs
+# -------------------------------------------------------------------------
+
+class VisionActionPolicy:
+    """`obs -> action` for a VL base model, over a fixed action vocabulary.
+
+    Presents the duck type `objective.load_checkpoint_policy` hands an
+    evaluator -- callable, `reseed`, `deterministic` -- so the evaluator never
+    learns which trainer produced it.
+    """
+
+    def __init__(self, model, processor, vocab: ActionVocab, *, device: str = "cuda",
+                 temperature: float = 1.0, action_names: Sequence[str] = ()) -> None:
+        self.model = model
+        self.processor = processor
+        self.vocab = vocab
+        self.device = device
+        self.temperature = float(temperature)
+        self.action_names = tuple(action_names)
+        self.deterministic = False
+        self._rng = np.random.default_rng(0)
+
+    def reseed(self, seed: int) -> None:
+        self._rng = np.random.default_rng(int(seed) & 0x7FFFFFFF)
+
+    def prompts(self, obs: dict) -> tuple[list[str], list[Any]]:
+        """Build one chat prompt per lane, with the frame as an image part."""
+        frames = list(obs["frames"])
+        texts = list(obs["text"])
+        from PIL import Image
+
+        images = [
+            f if hasattr(f, "size") else Image.fromarray(np.asarray(f, dtype=np.uint8))
+            for f in frames
+        ]
+        built = []
+        for text in texts:
+            messages = [{
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": text}],
+            }]
+            built.append(self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            ))
+        return built, images
+
+    def logits(self, obs: dict):
+        """Action logits for every lane: one forward, last position, masked."""
+        torch = _import_or_explain("torch", "torch>=2.2")
+        texts, images = self.prompts(obs)
+        batch = self.processor(
+            text=texts, images=images, return_tensors="pt", padding=True
+        ).to(self.device)
+        out = self.model(**batch)
+        return restrict_logits(out.logits[:, -1, :], self.vocab), texts, images
+
+    def __call__(self, obs: dict):
+        torch = _import_or_explain("torch", "torch>=2.2")
+        with torch.no_grad():
+            action_logits, _texts, _images = self.logits(obs)
+        return sample_action_indices(
+            action_logits, self._rng,
+            temperature=self.temperature, greedy=self.deterministic,
+        )
+
+
+def load_full_policy(
+    checkpoint_path: str | os.PathLike,
+    *,
+    device: str = "cuda",
+) -> VisionActionPolicy:
+    """Rebuild a full-parameter vision policy from its checkpoint record.
+
+    `grpo_full` writes two things side by side: a small `.pt` holding the
+    self-describing `arch` record, and an `hf/` directory holding the actual
+    weights in Hugging Face format. The weights are not inlined in the `.pt`
+    on purpose -- 16 GiB of tensors inside a pickle would double the checkpoint
+    and could not be served by anything except this framework, whereas the HF
+    export is the same shape the reproduction target published and serves.
+
+    So this reads the record, finds the export (beside the checkpoint first,
+    then the absolute path recorded at save time, because an artifact gets
+    moved and a path baked in during training is the first thing to go stale),
+    and rebuilds `obs -> action` with the action vocabulary the record carries.
+    No reward config, no optimizer, no manifest.
+    """
+    torch = _import_or_explain("torch", "torch>=2.2")
+    transformers = _import_or_explain("transformers", "transformers>=4.57")
+    _import_or_explain("PIL", "pillow>=10")
+
+    path = Path(checkpoint_path)
+    if not path.exists():
+        raise PostTrainError(f"no checkpoint at {path}")
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    arch = (payload or {}).get("arch") or {}
+    if arch.get("kind") != "lm_full_discrete":
+        raise PostTrainError(
+            f"{path} is not a grpo_full checkpoint (arch.kind={arch.get('kind')!r})"
+        )
+
+    candidates = [
+        path.parent.parent / str(arch.get("hf_export") or "hf"),
+        path.parent / str(arch.get("hf_export") or "hf"),
+        Path(str(payload.get("hf_export_path") or "")),
+    ]
+    export = next((c for c in candidates if c and (c / "config.json").is_file()), None)
+    if export is None:
+        raise PostTrainError(
+            f"checkpoint {path} records an HF export at {arch.get('hf_export')!r} but no "
+            f"config.json was found at any of {[str(c) for c in candidates if c]}; the "
+            "record and the weights have been separated"
+        )
+
+    processor = transformers.AutoProcessor.from_pretrained(str(export))
+    model_cls = getattr(transformers, "Qwen3VLForConditionalGeneration", None)
+    if model_cls is None:
+        model_cls = transformers.AutoModelForImageTextToText
+    dtype = getattr(torch, str(arch.get("dtype", "bfloat16")), torch.bfloat16)
+    model = model_cls.from_pretrained(str(export), dtype=dtype)
+    model.eval().to(device)
+
+    return VisionActionPolicy(
+        model,
+        processor,
+        ActionVocab.from_dict(arch["action_vocab"]),
+        device=device,
+        temperature=float(arch.get("temperature", 1.0)),
+        action_names=tuple((arch.get("prompt") or {}).get("labels") or ()),
+    )
