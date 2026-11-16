@@ -37,7 +37,7 @@ from autobranch.registry import MemoryBackend, Registry
 
 #: A two-lane environment that agrees with MANIFEST exactly: declared signals
 #: only, [n_envs, obs_dim] observations, and reproducible from a fixed seed.
-#: `n_envs = 2` rather than 1 on purpose (DESIGN.md lesson 10).
+#: `n_envs = 2` rather than 1 on purpose (README lesson 10).
 GOOD_ENV = '''\
 """A tiny deterministic environment, used only by the server tests."""
 

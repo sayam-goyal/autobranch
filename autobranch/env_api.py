@@ -100,7 +100,7 @@ def bundle_on_path(directory: str | os.PathLike | None) -> Iterator[None]:
     only resolves with the bundle root on `sys.path`. The entry is removed
     afterwards; the imported module stays in `sys.modules`, which is what we
     want -- repeated loads of the same bundle must not produce two distinct
-    module objects (lesson 1 in DESIGN.md, learned the hard way with two
+    module objects (lesson 1 in the README, learned the hard way with two
     `modal.App` instances).
     """
     if directory is None:
@@ -303,7 +303,7 @@ def validate_env(env: Any, spec: EnvironmentSpec, *, steps: int = 4, seed: int =
     if n_envs == 1:
         problems.append(
             ADVISORY + "n_envs == 1; prefer >= 2 -- a size-1 leading dimension has tripped "
-            "contiguity checks in native libraries (DESIGN.md lesson 10)"
+            "contiguity checks in native libraries (README lesson 10)"
         )
     if not callable(getattr(env, "close", None)):
         problems.append("env has no callable close(); the trainer must be able to release it")

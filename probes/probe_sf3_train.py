@@ -1,6 +1,6 @@
 """Probe: does `grpo_full` complete one real iteration on SF3?
 
-    modal run probe_sf3_train.py
+    modal run probes/probe_sf3_train.py
 
 The two primitives are already measured -- the model takes a full-parameter
 step on one H100 (49.5 GiB, 2.93 s) and an emulator lane boots in 27 s and

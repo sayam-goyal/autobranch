@@ -21,7 +21,7 @@ tokens, and activation memory under those is exactly what the estimate omits.
 So this runs a real forward+backward+step on a real frame-sized image and
 reports peak bytes per GPU.
 
-    modal run probe_full_ft.py
+    modal run probes/probe_full_ft.py
 
 Deliberately its own app and its own volumes -- nothing here may touch the
 sf3-rl apps or the rocket-league volumes.

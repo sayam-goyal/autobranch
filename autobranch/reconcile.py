@@ -9,7 +9,7 @@ status, and the registry reports a healthy running branch forever.
 That is not a cosmetic problem. It is the reason an SF3 run that was preempted
 37 minutes in went unnoticed for **eleven hours**: the monitor polled the
 registry, the registry said `running`, and the registry had no way to know.
-Polling real state rather than trusting a record is DESIGN.md's lesson 8, and
+Polling real state rather than trusting a record is README lesson 8, and
 the registry is a record.
 
 So: ask Modal which sandboxes are alive, and mark the branches whose sandboxes

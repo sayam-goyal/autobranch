@@ -1,7 +1,7 @@
 /* ==========================================================================
    autobranch — frontend
    Vanilla ES2020. No build step, no dependencies, no network except the
-   same-origin JSON API described in DESIGN.md §6.
+   same-origin JSON API the server exposes.
 
    Two knobs, both read off `window` so they can be set from the console or
    from a one-line <script> before this file:
@@ -430,7 +430,7 @@
   }
 
   /* ───────────────────────────── mock fixture ─────────────────────────────
-     A run on the environment DESIGN.md generalises from: nine sandboxes, four
+     A run on the environment this framework generalises from: nine sandboxes, four
      levels, two abandoned lines, and the 0.000 → 0.990 story the framework
      exists to make cheap.
      ------------------------------------------------------------------------ */

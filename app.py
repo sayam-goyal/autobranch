@@ -8,7 +8,7 @@ that package would be uploaded twice -- once as the entrypoint, once as part
 of the mounted package -- and the container would then import two distinct
 module objects holding two distinct `modal.App`s. Routes registered on one app
 are invisible to the other, and the symptom is a bare HTTP 500 with no
-traceback anywhere. DESIGN.md lesson 1, paid for in the predecessor project.
+traceback anywhere. README lesson 1, paid for in the predecessor project.
 
 Everything here is `modal 1.6.4` API: `scaledown_window`, `max_containers`,
 `modal.concurrent`. There is no `allow_concurrent_inputs`.
@@ -110,7 +110,7 @@ def spawn_run(run_id: str, spec_dict: dict, constraints_dict: dict, budget_dict:
     sandbox owns its agent loop and forks its own children. The run is marked
     `running` only once a sandbox genuinely exists -- a `running` run with no
     agent behind it is exactly the kind of unverified completion signal
-    DESIGN.md lesson 8 says never to trust.
+    README lesson 8 says never to trust.
     """
     from autobranch.branch import root_branch_id
     from autobranch.orchestrator import Budget, initial_reward
@@ -508,7 +508,7 @@ def cli_status(run_id: str, events: int = 12):
     """Poll a run's real state.
 
     Reads the registry Dicts directly from the client: no container, and no
-    completion event to take anyone's word for (DESIGN.md lesson 8).
+    completion event to take anyone's word for (README lesson 8).
     """
     from autobranch.registry import Registry
 

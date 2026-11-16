@@ -14,7 +14,7 @@ work precisely because annotations are evaluated eagerly.
 **The ASGI entrypoint lives outside this package**, in `app.py` at the
 repository root. A Modal entrypoint inside a package that the image also
 mounts is uploaded twice, and the container ends up importing two distinct
-module objects with two separate `modal.App`s. See DESIGN.md section 7.
+module objects with two separate `modal.App`s. See the Modal notes in the README.
 
 **A bundle is rejected here or nowhere.** `POST /api/runs` parses the
 manifest, loads the environment and steps it before any resource is created,
@@ -24,7 +24,7 @@ minute; a validator that answers in the browser is worth hours.
 
 Updates are **polled**, not pushed: `GET /api/runs/{id}` returns the whole run
 document and the frontend asks again every few seconds. Polling real state is
-DESIGN.md lesson 8 -- every silent failure in the predecessor project was
+README lesson 8 -- every silent failure in the predecessor project was
 caught by comparing counters, never by a completion notification.
 """
 
@@ -413,7 +413,7 @@ def _forget_bundle_modules(before: set[str], bundle_dir: str) -> None:
     The web container is long-lived and two bundles can both define
     `grid_env`. Leaving the first one cached would validate the *previous*
     submission's code and report it as this one's -- the same two-module-
-    objects confusion as DESIGN.md lesson 1, in a different disguise.
+    objects confusion as README lesson 1, in a different disguise.
     """
     root = os.path.abspath(bundle_dir)
     for name in set(sys.modules) - before:
@@ -1107,7 +1107,7 @@ def modal_launcher(spec: EnvironmentSpec, constraints: Constraints, budget: Budg
     """Spawn the tree driver by *name*, never by importing the entrypoint.
 
     `app.py` lives outside this package precisely so it is not imported twice
-    (DESIGN.md lesson 1). Importing it from here to get at `spawn_run` would
+    (README lesson 1). Importing it from here to get at `spawn_run` would
     recreate that bug, so the function is looked up on the deployed app
     instead.
     """
