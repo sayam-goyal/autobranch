@@ -1,11 +1,11 @@
 """Score an SF3 checkpoint against the objective, independently of the agent.
 
-    modal run eval_sf3.py --run-id run-25ed75aa0a --matches 24
+    modal run tools/eval_sf3.py --run-id run-25ed75aa0a --matches 24
 
 Pass --export-dir to score a retained checkpoint instead of the live export,
 which is the only way to measure a policy training has already moved past:
 
-    modal run eval_sf3.py --run-id run-25ed75aa0a \
+    modal run tools/eval_sf3.py --run-id run-25ed75aa0a \
         --export-dir checkpoints/step-52800 --matches 24
 
 The branch agent decides when to evaluate. That is the design -- the search

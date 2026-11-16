@@ -9,7 +9,7 @@ path so the number we quote stays attached to weights that still exist.
 Read-only with respect to everything the live run touches: it reads hf/ and
 writes to a sibling directory the trainer never opens.
 
-    modal run snapshot_checkpoint.py --run-id run-25ed75aa0a
+    modal run tools/snapshot_checkpoint.py --run-id run-25ed75aa0a
 """
 
 import modal

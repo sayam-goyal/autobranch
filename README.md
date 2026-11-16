@@ -48,6 +48,16 @@ modal run app.py::cli_finalize --run-id run-xxxx    # build the artifact
 
 `examples/` has three ready to run: `gridworld`, `wordguess`, `sf3`.
 
+Scoring a checkpoint yourself, outside the search:
+
+```bash
+modal run tools/eval_sf3.py --run-id run-xxxx --branch-id b0 --matches 72
+```
+
+It reads the weights off the Volume and runs the same evaluator the branch
+would. Match seeds come from a bank of eight unrelated families, because one
+family is one draw of opponents and a number from it looks tighter than it is.
+
 ## Environments
 
 An environment is a directory with a manifest and some code. The manifest is
@@ -137,6 +147,9 @@ autobranch/
   server.py         API and UI
 examples/           gridworld, wordguess, sf3
 frontend/           the web UI
+tools/              score a checkpoint, snapshot one, watch a run
+probes/             the measurements the design rests on
+evidence/           charts from the runs that have been done
 tests/
 ```
 

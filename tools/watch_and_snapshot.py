@@ -9,7 +9,7 @@ overwrites it.
 Also marks a checkpoint `keep.marker` once it has been measured, so the
 retention window can never prune weights a result refers to.
 
-    python watch_and_snapshot.py run-25ed75aa0a b0
+    python tools/watch_and_snapshot.py run-25ed75aa0a b0
 """
 
 import json
