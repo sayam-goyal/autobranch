@@ -40,13 +40,14 @@ modal token new          # if you haven't
 ./serve_local.sh                                    # UI at localhost:8080
 modal deploy app.py                                 # backend
 
-modal run app.py::cli_validate --bundle examples/gridworld
-modal run app.py::cli_submit   --bundle examples/gridworld --usd 8 --hours 1
+modal run app.py::cli_validate --bundle examples/sf3
+modal run app.py::cli_submit   --bundle examples/sf3 --usd 50 --hours 8
 modal run app.py::cli_status   --run-id run-xxxx
 modal run app.py::cli_finalize --run-id run-xxxx    # build the artifact
 ```
 
-`examples/` has three ready to run: `gridworld`, `wordguess`, `sf3`.
+`examples/sf3` is a full environment: Street Fighter III through Diambra,
+Ryu against the built-in CPU.
 
 Scoring a checkpoint yourself, outside the search:
 
@@ -145,44 +146,10 @@ autobranch/
   registry.py       run and branch state
   ledger.py         spend, as per-writer shards
   server.py         API and UI
-examples/           gridworld, wordguess, sf3
+examples/sf3        a full environment, end to end
 frontend/           the web UI
 tools/              score a checkpoint, snapshot one, watch a run
 probes/             the measurements the design rests on
 evidence/           charts from the runs that have been done
 tests/
-```
-
-## Modal notes
-
-Things that cost time, written down so they don't cost it again.
-
-1. Keep Modal entrypoints outside any package you mount with
-   `add_local_python_source`. A double-uploaded module gives you two
-   `modal.App` objects and websocket routes die with a bare 500.
-2. No `from __future__ import annotations` in modules defining FastAPI
-   endpoints with lazily imported annotation types. The route stops
-   dispatching, silently.
-3. Pin `fastapi==0.115.12`, `starlette<0.42`, `uvicorn==0.34.3`,
-   `websockets==12.0`. Modal's ASGI bridge can't serialise Starlette 1.x close
-   messages.
-4. `modal app stop` does nothing without `--yes`.
-5. `modal run --detach` creates an app, it doesn't replace one. Relaunching
-   has to stop the old one first, and refuse to start if it can't. Two
-   trainers on one directory corrupt the artifact quietly.
-6. There's an app-create rate limit. Stagger launches by 20s and check the
-   live app count against what you expect, or a dropped job is invisible.
-7. Don't aggregate a ledger in one shared file with concurrent writers.
-   Read-modify-write loses entries; we once kept 29 of six writers' records.
-   Use one file per writer and sum them at read time.
-8. Poll real state. Never trust a completion event. Every silent failure in
-   the predecessor project was caught by comparing counters.
-9. Record the GPU you were actually given, not the one you asked for.
-10. Degenerate shapes break native libraries. `n_sim=1` failed a contiguity
-    check that a size-1 leading stride can't satisfy. Use 2 or more.
-
-## Tests
-
-```bash
-pytest -q
 ```

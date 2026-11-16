@@ -1,41 +1,17 @@
 """Full-parameter critic-free RL on a vision-language base model.
 
-This is the `grpo_full` trainer. It exists because the thing it reproduces was
-a full fine-tune: modal-labs/sf3 trained Qwen3-VL-8B through slime/Megatron on
-eight GPUs and exported `iter_*_hf` checkpoints, with no LoRA anywhere in the
-repository. `grpo_lora` answers a different question -- how good can an adapter
-over frozen weights get -- so using it here would have silently changed the
-experiment.
+The `grpo_full` trainer, for reproducing a full fine-tune rather than an
+adapter. Method is identical to `grpo_lora` -- masked-token actions,
+group-relative advantages, clipped surrogate -- and two things differ.
 
-It differs from `posttrain.py` in exactly two ways, and shares the RL method:
+Every parameter is trainable, and memory is what makes that hard: bf16 weights
+and grads are 32 GiB, and fp32 Adam moments would add 64 GiB on an 80 GiB
+card. The 8-bit optimizer is the difference between one GPU and model
+parallelism, measured on the real model before any of this was built.
 
-**Every parameter is trainable.** The memory arithmetic is what makes this hard
-rather than interesting:
-
-    bf16 params           16 GiB
-    bf16 grads            16 GiB
-    Adam fp32 moments     64 GiB    -> 96 GiB, over one 80 GiB card
-    Adam 8-bit moments    16 GiB    -> 48 GiB, fits with room for activations
-
-so the 8-bit optimizer is not a tuning choice, it is the difference between
-running on one GPU and needing model parallelism. `probes/probe_full_ft.py` measured
-this on the real model with a real frame before any of it was built, because
-the estimate omits exactly the term that matters -- activation memory under
-hundreds of image tokens.
-
-**The observation is an image plus text.** A VL policy reads the emulator's
-frame. `posttrain.serialize_observation` renders a numeric vector into a text
-prompt, which for a 384x224x3 frame would be 258,048 comma-separated integers;
-the processor turns the same frame into a few hundred image tokens. So prompts
-are built through the processor here, and the frame travels in the checkpoint's
-prompt record so an evaluator rebuilds the same policy.
-
-What is unchanged, deliberately, is the method: an action is a **masked token**
-(one forward, logits at the last position, restricted to the action vocabulary,
-sampled -- so an illegal action is unrepresentable and no invalid-action
-penalty has to exist in the reward), advantages are **group-relative** with no
-critic, and the update is a clipped surrogate. Reward comes from a config the
-search wrote; the objective that scores it imports none of this.
+The observation is an image plus text. Prompts are built through the
+processor, and the frame travels in the checkpoint's prompt record so an
+evaluator can rebuild the same policy.
 """
 
 import json
@@ -82,14 +58,6 @@ def durable_root() -> Path:
     this project has already paid for forgetting that once, when checkpoints
     written by the trainer died with their branch and the framework's
     deliverable was the one thing it did not keep.
-
-    For a full fine-tune the stakes are higher in both directions. The HF
-    export *is* the trained model, 16 GiB of it, so losing it loses the run;
-    and putting 16 GiB inside `/workspace` would also make every fork
-    `snapshot_directory` that much, turning the cheap branch primitive into the
-    most expensive thing in the system. So the export and the metrics live on
-    the Volume, keyed by run and branch, and the small torch record stays in
-    the workspace where fork inheritance expects it.
     """
     root = Path(os.environ.get("AUTOBRANCH_DATA_ROOT", "/data"))
     run = os.environ.get("AUTOBRANCH_RUN_ID", "local")
@@ -108,115 +76,60 @@ REQUIRED_PIP = (
 class FullHyper:
     """Knobs for a full-parameter critic-free run.
 
-    Defaults are small on purpose. A full fine-tune of 8B parameters forgets
-    fast: the learning rate is two orders of magnitude below a LoRA run's
-    because every weight moves, and `max_grad_norm` is tight because one bad
-    batch of a 40-way categorical can take the policy somewhere it will not
-    come back from inside a budget this short.
+    Defaults are small on purpose: every weight moves, so the learning rate is
+    two orders of magnitude below a LoRA run's and `max_grad_norm` is tight.
     """
 
     lr: float = 1e-6
     group_size: int = 8
-    #: One collection per update. Measured: a lane steps in 0.25 s and lanes
-    #: run concurrently, so a 600-decision collection costs ~150 s of wall
-    #: clock no matter how many lanes there are. Two collections per update
-    #: would double that for a baseline the batch already estimates from eight
-    #: concurrent matches, and halve the number of gradient steps a fixed
-    #: deadline buys.
+    #: One collection per update. A 600-decision collection costs ~150 s
+    #: whatever the lane count, and the batch already estimates a baseline
+    #: from eight concurrent matches.
     groups_per_iteration: int = 1
-    #: Measured, not guessed. probes/probe_full_ft.py saw 2.93 s for a single-sample
-    #: forward+backward+step with 30 GiB of headroom left, so a batch of one
-    #: would spend 78 minutes updating on a 1600-decision iteration. Prompts
-    #: here are ~104 tokens, so 8 fit comfortably in that headroom.
+    #: Measured: 2.93 s for a single-sample forward+backward+step with 30 GiB
+    #: spare, so a batch of one would spend 78 minutes on a 1600-decision
+    #: iteration. Prompts are ~104 tokens, so 8 fit.
     micro_batch_size: int = 8
-    #: Train on a random subset of the decisions a collection produced. The
-    #: predecessor project tested this knob explicitly; the reason it is on by
-    #: default is that collection is cheap relative to the update once the
-    #: emulator lanes run concurrently, so an iteration otherwise spends almost
-    #: all of its wall clock in backward passes over correlated samples from
-    #: the same few matches.
+    #: Train on a subset of a collection. Collection is cheap next to the
+    #: update, so otherwise an iteration spends its wall clock on backward
+    #: passes over correlated samples from the same few matches.
     train_subsample: int = 256
-    #: Hard wall-clock ceiling for one `train()` call, regardless of the step
-    #: target it was given.
-    #:
-    #: `branch_main._cap_steps` tries to do this by converting the deadline
-    #: into a step count, but it can only do that once it has measured a rate
-    #: -- which means from the *second* call. On the first call it falls back
-    #: to a pure step ceiling, and on an environment where a step costs ~0.15 s
-    #: of wall clock that ceiling was 194 minutes. One branch spent 112 minutes
-    #: of a 5-hour deadline inside its first tool call, never reaching an
-    #: evaluation, which is precisely what that function's docstring promises
-    #: will not happen.
-    #:
-    #: Steps are what a trainer counts; time is what a deadline is made of, and
-    #: only the trainer knows the exchange rate. So it enforces the bound
-    #: itself and returns what it has -- `steps` is a target, not a contract.
+    #: Hard wall-clock ceiling for one train() call. `_cap_steps` can only
+    #: convert a deadline into steps once it has measured a rate, so its first
+    #: call fell back to a step ceiling worth 194 minutes. Steps are what a
+    #: trainer counts; seconds are what a deadline is made of.
     max_seconds: float = 1200.0
-    #: Export every N iterations, and always before returning.
-    #:
-    #: This was 5, reasoning that an export is only *needed* when train()
-    #: returns because that is when the evaluator loads it, and that in between
-    #: it is mere crash insurance worth ~60 s of every ~750 s iteration. Then a
-    #: run was preempted on iteration 4 and lost all three of its completed
-    #: iterations, because no export had been written yet.
-    #:
-    #: On preemptible hardware checkpoint frequency is not insurance, it is the
-    #: bound on how much work a preemption can destroy. At 2 the worst case is
-    #: ~25 minutes instead of ~an hour, for 8% of the wall clock rather than 4%.
+    #: Export every N iterations, and always before returning. At 5, a
+    #: preemption on iteration 4 lost three completed iterations. On
+    #: preemptible hardware this is not insurance, it is the bound on how much
+    #: work a preemption can destroy.
     save_every: int = 2
-    #: How many step-stamped copies of the export to retain beside it.
-    #:
-    #: `save_every` bounds what a preemption destroys; this bounds what
-    #: *training itself* destroys. Every export overwrites the last one, so the
-    #: volume only ever holds the newest policy -- and in RL the newest policy
-    #: is routinely not the best one. This run measured 0.750 at step 28,800
-    #: and 0.542 at 52,800, and by the time anyone compared the two the 28,800
-    #: weights had been overwritten four times over. The better number was
-    #: real, recorded, and permanently unreproducible: nothing to re-measure,
-    #: nothing to serve, nothing to ship.
-    #:
-    #: A full checkpoint is ~16 GiB, which is why the default is small rather
-    #: than zero. Volume bytes are the cheapest thing in this system; an hour
-    #: of H100 that produced a model we then deleted is the most expensive.
-    #: 0 disables retention and restores the overwrite-only behaviour.
+    #: Step-stamped copies kept beside the export. Every export overwrites the
+    #: last, and the newest policy is routinely not the best: this run measured
+    #: 0.750 at step 28,800 and 0.542 at 52,800, by which time the 28,800
+    #: weights were gone. 0 restores overwrite-only.
     keep_checkpoints: int = 3
-    #: Where the HF export and a mirrored metrics log go. Empty means derive it
-    #: from AUTOBRANCH_DATA_ROOT/RUN_ID/BRANCH_ID, which is what a real branch
-    #: wants; a probe or a local test passes an explicit path.
+    #: Empty derives it from AUTOBRANCH_DATA_ROOT/RUN_ID/BRANCH_ID; a probe or
+    #: a local test passes an explicit path.
     durable_root: str = ""
     epochs: int = 1
     clip: float = 0.2
     max_grad_norm: float = 0.5
-    #: Small but nonzero. The probe measured 0.41 nats of action entropy once
-    #: the menu was in the prompt -- against ln(40) = 3.69 available -- so the
-    #: base model arrives with a strong opinion about what to do. That is the
-    #: point of starting from a pretrained VL model, but the predecessor
-    #: project found its policy was "only competent while sampling" and
-    #: collapsed to 0/100 at the mode, so a run with ~54 iterations cannot
-    #: afford to sharpen further before it has explored.
+    #: Small but nonzero. The base model arrives with a strong opinion -- 0.41
+    #: nats of action entropy against ln(40) = 3.69 available -- and the
+    #: predecessor's policy collapsed to 0/100 at its mode, so a ~54-iteration
+    #: run cannot afford to sharpen before it has explored.
     entropy_coef: float = 0.01
     temperature: float = 1.0
     gamma: float = 0.995
-    #: Hinh discounted the round outcome on a 3600-frame half-life. Kept as a
-    #: default so his configuration is reachable, not imposed: the reward DSL
-    #: owns shaping, this only sets the return's horizon.
+    #: The reference run discounted the round outcome on a 3600-frame
+    #: half-life. A default, not an imposition: the reward DSL owns shaping,
+    #: this only sets the return's horizon.
     discount_half_life_frames: float = 3600.0
-    #: 600, measured both ways. At 600 a collection produced 6 round wins
-    #: across 8 lanes; at 400 it produced **zero**, and that is the whole
-    #: reason this is not tuned lower to buy gradient steps.
-    #:
-    #: The mistake worth recording: 6 rounds over 8x600 lane-decisions reads as
-    #: "one round per 800 lane-decisions", which invites treating it as a rate
-    #: and scaling it down. Round length is a *threshold*, not a rate -- a
-    #: round takes some minimum number of decisions in a single lane to reach a
-    #: KO or the clock, and below that no lane finishes one no matter how many
-    #: lanes there are. 400 was below it.
-    #:
-    #: A collection with no round outcomes trains on shaping alone: round_won
-    #: and round_lost are the only terms tied to the objective, and they never
-    #: fire. Worse, the agent sees rounds_won 0 in its metrics and may rewrite
-    #: a perfectly good reward in response to an artifact of the collection
-    #: window -- which corrupts the search rather than just slowing it.
+    #: Measured both ways: at 600 a collection produced 6 round wins across 8
+    #: lanes, at 400 it produced zero. Round length is a threshold, not a rate
+    #: -- below some minimum no lane finishes a round however many lanes run.
+    #: A collection with no round outcomes trains on shaping alone.
     max_decisions_per_match: int = 600
     grad_checkpointing: bool = True
     device_map: str = ""  # "" = single device; "auto" splits layers across GPUs
@@ -580,10 +493,6 @@ def retain_checkpoint(export_dir: Path, step: int, keep: int) -> Path | None:
     when it does not (a FUSE-backed volume may refuse `link`). Either way the
     copy is staged and renamed, so a half-written checkpoint never appears
     under a name something else might load.
-
-    A directory holding a `keep.marker` is never pruned. That is how a
-    checkpoint someone has actually measured survives the retention window --
-    an evaluated step is evidence, and evidence outranks recency.
     """
     if keep <= 0 or step is None:
         return None

@@ -32,7 +32,6 @@ RewardConfig = dict[str, Any]
 class RewardError(ValueError):
     """Malformed reward config, with a path into the document."""
 
-
 def _require(cond: bool, where: str, msg: str) -> None:
     if not cond:
         raise RewardError(f"{where}: {msg}")

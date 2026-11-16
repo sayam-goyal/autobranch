@@ -1,26 +1,15 @@
 """Spend accounting that survives concurrency.
 
-**An aggregate computed from every shard is the only authoritative total. The
-total in any single shard file is not a total of anything.** Each writer --
-each branch agent, each trainer -- appends to its own `ledger/<writer>.jsonl`
-and never reads or rewrites another writer's file. `Ledger.entries()` reloads
-the volume and merges all of them; that merge is the number a budget decision
-may be made from.
+An aggregate over every shard is the only authoritative total. The total in a
+single shard is not a total of anything. Each writer appends to its own
+`ledger/<writer>.jsonl` and never reads or rewrites another's.
 
-This is not a stylistic preference. The predecessor project aggregated spend
-in one shared file with read-modify-write, ran six concurrent writers, and
-finished with 29 entries that all belonged to one of them. No error was
-raised. Append-only per-writer shards cannot lose a neighbour's write because
-no writer ever holds a neighbour's bytes.
+Record the GPU actually allocated, not the one requested: Modal honours a
+fallback list, so a branch that asked for an H100 may be billed as an A10G.
 
-Two further rules, both learned the same way:
-
-* Record the **actual** allocated GPU. Modal honours a fallback list, so a
-  branch that asked for an H100 may be billed as an A10G or vice versa.
-  `detect_gpu()` asks the driver; the request is kept only as metadata.
-* Reading tolerates a truncated last line. A writer killed mid-append leaves
-  half a JSON object, and a reader that raises on it turns a rounding problem
-  into a dead orchestrator.
+Reading tolerates a truncated last line. A writer killed mid-append leaves
+half a JSON object, and raising on it turns a rounding problem into a dead
+orchestrator.
 """
 
 import json
@@ -83,7 +72,6 @@ class UnknownGPU(ValueError):
     stop working, and a cap that stops working is indistinguishable from a cap
     that is generous.
     """
-
 
 def normalize_gpu(name: str | None) -> str | None:
     """Fold a driver product name or a Modal `gpu=` string to a rate key.
@@ -388,14 +376,6 @@ class Ledger:
         shards that existed when it started, and under-reports by exactly the
         branches that launched after it. A missed reload is invisible -- the
         number still looks like a number.
-
-        But a **Sandbox is not a Function**, and Modal raises "reload() can
-        only be called from within a running function" there. Letting that
-        propagate made every branch's spend read as $0 -- the shards were being
-        written correctly the whole time and the reader was throwing. So a
-        failed reload degrades to "read what is already mounted" rather than
-        to an exception: a slightly stale total beats no total, because the
-        budget guard consumes this number.
         """
         if reload and self.volume is not None:
             try:

@@ -335,7 +335,7 @@ def evaluate(
 
     for seed in seeds:
         # At least 2 lanes: a size-1 leading dimension has tripped contiguity
-        # checks in native libraries (README lesson 10).
+        # checks in native libraries.
         env = GridWorld(
             n_envs=max(2, min(lanes, per_seed)), max_steps=max_steps, slip_prob=slip_prob
         )

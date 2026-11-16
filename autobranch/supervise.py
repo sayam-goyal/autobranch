@@ -1,31 +1,15 @@
 """Keep a run alive: detect a dead branch and restart it.
 
-Written because a run was preempted 37 minutes in and nobody noticed for
-**eleven hours**. `reconcile.py` is the diagnosis half -- it asks Modal which
-sandboxes are alive and corrects the registry. This is the treatment half: when
-the root branch is gone and the run still has deadline left, start it again.
+`reconcile.py` is the diagnosis half. This is the treatment: when the root
+branch is gone and the run still has deadline left, start it again with the
+same run id, deadline and reward config, so the trainer resumes from its last
+export instead of from zero.
 
-Three things make the restart worth doing rather than just alarming:
+Narrow on purpose. It restarts the root of a run whose branches are all dead.
+It will not resurrect one child of a live tree, extend a deadline, or exceed
+`--max-restarts`.
 
-* **The trainer resumes.** `grpo_full` mirrors `progress.json` and its HF export
-  to the Volume, so a new sandbox continues from the last export rather than
-  from zero. Before that fix a restart would have silently started over, which
-  is worse than not restarting.
-* **The run keeps its identity.** `launch_root` takes an existing `run_id` and
-  `deadline_ts`, so a restart is the same run with a new sandbox -- not a new
-  run that fragments the history and the artifact.
-* **The reward survives.** The branch's recorded `reward_config` is passed back
-  in, so a restart does not discard whatever the agent had settled on and
-  reopen the search at the baseline.
-
-Deliberately narrow. It restarts the **root** of a run whose branches are all
-dead, and it does nothing else: it will not resurrect one child of a live tree
-(the orchestrator's own fork logic owns that), it will not extend a deadline,
-and it will not exceed `--max-restarts`, because a branch that dies immediately
-and repeatedly is a bug to read rather than a thing to keep relaunching.
-
-    python -m autobranch.supervise --run-id run-xxxx            # one check
-    python -m autobranch.supervise --run-id run-xxxx --loop 60   # supervise
+    python -m autobranch.supervise --run-id run-xxxx [--loop 60]
 """
 
 import argparse

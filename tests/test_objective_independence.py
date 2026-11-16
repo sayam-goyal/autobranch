@@ -7,7 +7,7 @@ module. So this test parses sources with `ast` and walks the first-party
 import graph from both ends of the measurement path:
 
 * `autobranch.objective`, which turns a checkpoint into a score, and
-* the environment's own evaluator (`examples/gridworld/grid_env.py`).
+* the environment's own evaluator (`tests/fixtures/gridworld/grid_env.py`).
 
 A `sys.modules` check would be weaker in exactly the way that matters: it only
 sees what some earlier import happened to pull in, so it passes by luck. The
@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-BUNDLE = REPO / "examples" / "gridworld"
+BUNDLE = REPO / "tests" / "fixtures" / "gridworld"
 
 #: Reward composition and the trainer that applies it. Anything on the
 #: measurement path that can import these can, in principle, be influenced by

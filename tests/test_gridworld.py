@@ -21,7 +21,7 @@ from autobranch.spec import EnvironmentSpec
 from autobranch.trainer import init_checkpoint, train
 
 REPO = Path(__file__).resolve().parent.parent
-BUNDLE = REPO / "examples" / "gridworld"
+BUNDLE = REPO / "tests" / "fixtures" / "gridworld"
 MANIFEST = BUNDLE / "autobranch.yaml"
 
 UP, DOWN, LEFT, RIGHT = 0, 1, 2, 3

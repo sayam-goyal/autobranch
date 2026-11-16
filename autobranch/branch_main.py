@@ -1,27 +1,17 @@
 """What runs inside a branch sandbox.
 
-This is the loop: the agent proposes a reward, trains, measures against the
-immutable objective, and decides whether to refine, fork, roll back, or give
-up. It is the only module that both talks to a model and spends GPU, so it is
-also where the guards live.
+The loop: the agent proposes a reward, trains, measures against the immutable
+objective, and decides whether to refine, fork, roll back or give up. It is
+the only module that both talks to a model and spends GPU, so the guards live
+here.
 
-Three properties are deliberate.
-
-**The agent never scores itself.** `evaluate` calls `autobranch.objective`,
-which imports no reward code; the number it returns is the only thing that
-counts toward the run's result. An agent can write any reward it likes and
+The agent never scores itself -- `evaluate` calls `autobranch.objective`,
+which imports no reward code, so an agent can write any reward it likes and
 cannot move its own measurement.
 
-**Two parties can stop a branch.** The agent may `abandon`; the orchestrator's
+Two parties can stop a branch: the agent may `abandon`, and the orchestrator's
 `SearchPolicy` abandons it regardless on budget, deadline, depth, plateau or
-domination. Either alone fails: an optimistic model would burn the budget on
-one line, and a policy alone would discard the judgement that makes this
-better than a grid sweep.
-
-**Forking mounts a snapshot, never shares a directory.** Two trainers writing
-one workspace silently corrupt the artifact they are both producing, and that
-failure is invisible until the weights are loaded. Mounting makes it
-impossible rather than merely discouraged.
+domination. Either alone fails.
 """
 
 import json
@@ -141,12 +131,6 @@ class BranchState:
         Two fields are not: `spend_usd` and `tokens` are per-branch
         accumulators, and a child that inherits them reports its parent's
         bill as its own for as long as it lives.
-
-        That happened here. Three forked branches each published ~$16 while
-        the ledger attributed ~$1.30 to them, so a run that had truly spent
-        $22 reported $63. The budget guard reads the ledger directly and was
-        never fooled, but every off-volume reader was: the UI, the artifact,
-        and any analysis afterwards.
         """
         try:
             with open(path) as fh:
@@ -421,10 +405,6 @@ class BranchRunner:
         guard reads it directly, so the cap was never enforced against the
         inflated figure) and wrong everywhere else, which is every off-volume
         reader: the local UI, the artifact, any analysis afterwards.
-
-        The ledger attributes every entry to a branch, so the honest value is
-        this branch's share. The run total is then the sum, which is what the
-        fallback assumes.
         """
         if self.ledger is None:
             return
@@ -864,18 +844,6 @@ def start_compute_biller(ledger, spec, branch_id: str, *, every: float = 60.0):
     a true $2.41, understated 241x. And if the sandbox is **preempted mid-call
     it bills nothing, ever**: a preempted run cost ~$4.56 and was never recorded
     at all.
-
-    The second one is the serious one. The budget cap is enforced against the
-    ledger, so unbilled time is time the cap cannot see -- which makes "hard
-    ceilings, decremented centrally" untrue exactly when it matters, because
-    preemption is the case where a run is most likely to be relaunched and
-    spend again.
-
-    A sandbox burns money continuously, so billing is continuous: a daemon
-    thread records the interval since its last mark every `every` seconds. The
-    thread is a daemon and every failure is swallowed, because accounting must
-    never be the reason a branch dies -- but it marks time before sleeping, so a
-    crash mid-interval loses at most one interval rather than double-billing.
     """
     import threading
     import time as _time

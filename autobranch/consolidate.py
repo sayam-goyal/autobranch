@@ -1,22 +1,15 @@
-"""Turning a finished search into something you can actually run.
+"""Turning a finished search into something you can run.
 
-The deliverable is not "the best score" -- it is weights plus everything
-needed to use them, plus an honest account of how they were found. So the
-artifact carries four things:
+The deliverable is weights plus everything needed to use them, plus an honest
+account of how they were found. The artifact carries four things: the winning
+checkpoint, a manifest with the objective score and its provenance command,
+the reward lineage from root to winner, and every abandoned branch with its
+reason.
 
-* the winning checkpoint;
-* a manifest with the objective score, its provenance command, and spend;
-* the **reward lineage**: root to winner, every mutation and what it scored;
-* the **losers**: every abandoned branch and why it was abandoned.
+The losers file is the result, not an apology. A search that reports only its
+winner cannot be told apart from a lucky guess.
 
-The losers file is not an apology, it is the result. A search that reports only
-its winner cannot be distinguished from a lucky guess, and the predecessor
-project's most useful finding was the shape of its failures, not its headline.
-
-Ranking is always by **objective**, never by training reward. That rule exists
-because the two diverged badly in the predecessor project: six reward configs
-reported healthy self-play numbers while scoring 0.000 against a fixed
-opponent.
+Ranking is always by objective, never by training reward.
 """
 
 import json
@@ -31,7 +24,6 @@ ARTIFACT_DIRNAME = "artifacts"
 
 class ConsolidationError(RuntimeError):
     """Raised when there is nothing defensible to ship."""
-
 
 @dataclass
 class Winner:

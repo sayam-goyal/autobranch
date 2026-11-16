@@ -61,7 +61,6 @@ ACTION_SCHEMA_HINT = (
 class AgentError(RuntimeError):
     """Base for agent-loop failures."""
 
-
 class ActionInvalid(AgentError):
     """A model-authored action that cannot be executed.
 
@@ -80,18 +79,14 @@ class ActionInvalid(AgentError):
 class MalformedAction(ActionInvalid):
     """Not a JSON object, or missing the `tool` field."""
 
-
 class UnknownTool(ActionInvalid):
     """`tool` is not in `TOOLS`."""
-
 
 class BadArguments(ActionInvalid):
     """Required args missing, unexpected args present, or wrong types."""
 
-
 class UndeclaredSignal(ActionInvalid):
     """A reward config references a signal the environment does not report."""
-
 
 # ---- tools --------------------------------------------------------------
 

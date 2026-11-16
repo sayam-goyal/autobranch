@@ -22,7 +22,7 @@ import os
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Protocol, runtime_checkable
+from typing import Any, Iterator, Mapping, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -100,7 +100,7 @@ def bundle_on_path(directory: str | os.PathLike | None) -> Iterator[None]:
     only resolves with the bundle root on `sys.path`. The entry is removed
     afterwards; the imported module stays in `sys.modules`, which is what we
     want -- repeated loads of the same bundle must not produce two distinct
-    module objects (lesson 1 in the README, learned the hard way with two
+    module objects (learned the hard way with two
     `modal.App` instances).
     """
     if directory is None:
@@ -169,7 +169,55 @@ def blocking(problems: list[str]) -> list[str]:
     return [p for p in problems if not p.startswith(ADVISORY)]
 
 
+def _reset_obs(result: Any) -> Any:
+    """The observation out of a reset return.
+
+    `reset` follows the Gym convention and returns `(obs, info)`. Every
+    trainer unpacks it; this used to hand the whole tuple to the observation
+    check, which then reported a correct environment as "not array-like".
+    """
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], Mapping):
+        return result[0]
+    return result
+
+
+def _check_structured_obs(obs: Mapping, n_envs: int, where: str,
+                          problems: list[str]) -> None:
+    """Validate a vision-language observation: one entry per lane, per field.
+
+    A VL policy reads a frame plus a state line, so its observation is a
+    mapping rather than a float matrix. The dense checks below -- obs_dim,
+    finiteness, replay equality -- do not apply to it; this checks the shape
+    that does, which is that every declared field carries exactly n_envs
+    entries.
+    """
+    known = [k for k in ("text", "image") if k in obs]
+    if not known:
+        problems.append(
+            f"{where}: observation is a mapping with none of the known fields "
+            f"(text, image); got {sorted(obs)[:6]}"
+        )
+        return
+    for key in known:
+        try:
+            size = len(obs[key])
+        except TypeError:
+            problems.append(f"{where}: observation[{key!r}] has no length")
+            continue
+        if size != n_envs:
+            problems.append(
+                f"{where}: observation[{key!r}] has {size} entries; "
+                f"expected n_envs={n_envs}"
+            )
+
+
 def _as_obs_matrix(obs: Any, n_envs: int, where: str, problems: list[str]) -> np.ndarray | None:
+    # A mapping is a structured observation, not a broken dense one. Returning
+    # None skips the dense checks, which is correct rather than lenient: there
+    # is no obs_dim to compare and no float matrix to replay.
+    if isinstance(obs, Mapping):
+        _check_structured_obs(obs, n_envs, where, problems)
+        return None
     try:
         arr = np.asarray(obs, dtype=np.float64)
     except (TypeError, ValueError) as exc:
@@ -281,16 +329,6 @@ def validate_env(env: Any, spec: EnvironmentSpec, *, steps: int = 4, seed: int =
     Returns human-readable problems, most specific first; an empty list means
     the bundle is safe to train. Entries prefixed with `ADVISORY` are smells,
     not violations -- use `blocking()` to filter.
-
-    What is checked, and why each one is here: the signal set (a typo'd signal
-    name is unobservable at runtime because a reward term over a missing
-    signal silently contributes zero), shapes against `n_envs` (a broadcast
-    bug turns a per-lane reward into a global one and learning quietly
-    stops), `obs_dim` against the manifest (the policy is built from the
-    manifest, so a mismatch is a crash several minutes into a run), the action
-    extremes (an env that rejects its own declared action range fails only
-    once exploration finds that action), and determinism under a fixed seed
-    (branches are only comparable if runs are reproducible).
     """
     problems: list[str] = []
 
@@ -303,7 +341,7 @@ def validate_env(env: Any, spec: EnvironmentSpec, *, steps: int = 4, seed: int =
     if n_envs == 1:
         problems.append(
             ADVISORY + "n_envs == 1; prefer >= 2 -- a size-1 leading dimension has tripped "
-            "contiguity checks in native libraries (README lesson 10)"
+            "contiguity checks in native libraries"
         )
     if not callable(getattr(env, "close", None)):
         problems.append("env has no callable close(); the trainer must be able to release it")
@@ -321,7 +359,7 @@ def validate_env(env: Any, spec: EnvironmentSpec, *, steps: int = 4, seed: int =
         problems.append(f"env.reset(seed={seed}) raised {type(exc).__name__}: {exc}")
         return problems
 
-    matrix = _as_obs_matrix(obs0, n_envs, "reset()", problems)
+    matrix = _as_obs_matrix(_reset_obs(obs0), n_envs, "reset()", problems)
     obs_dim = None if matrix is None else int(matrix.shape[1])
     declared_dim = spec.policy.obs_dim
     if obs_dim is not None and declared_dim is not None and obs_dim != declared_dim:
@@ -374,12 +412,19 @@ def validate_env(env: Any, spec: EnvironmentSpec, *, steps: int = 4, seed: int =
                 )
 
     # Determinism: replay the identical action log from the identical seed.
+    #
+    # An environment the manifest measures stochastically is not expected to
+    # replay bit-exactly -- an emulator with an endogenous CPU opponent never
+    # will -- so for those a mismatch is reported but does not reject the
+    # bundle. Branch comparison then rests on the seed bank and sample size,
+    # which is what the objective already does.
+    replay_prefix = "" if spec.objective.budget.get("deterministic", True) else ADVISORY
     try:
         obs_b = env.reset(seed=seed)
     except Exception as exc:  # noqa: BLE001
         problems.append(f"second env.reset(seed={seed}) raised {type(exc).__name__}: {exc}")
         return problems
-    mat_b = _as_obs_matrix(obs_b, n_envs, "reset() replay", problems)
+    mat_b = _as_obs_matrix(_reset_obs(obs_b), n_envs, "reset() replay", problems)
     if matrix is not None and mat_b is not None and not np.allclose(matrix, mat_b):
         problems.append(
             f"reset(seed={seed}) returned different observations on two calls; "
@@ -395,14 +440,17 @@ def validate_env(env: Any, spec: EnvironmentSpec, *, steps: int = 4, seed: int =
         ref_obs, ref_signals = trace_a[i]
         if mat is not None and ref_obs.size and not np.allclose(mat, ref_obs, atol=1e-9):
             problems.append(
-                f"replay step {i}: observations differ from the first run under the same seed "
-                "and the same actions"
+                f"{replay_prefix}replay step {i}: observations differ from the first run "
+                "under the same seed and the same actions"
             )
             break
         for name, ref in ref_signals.items():
             got = np.atleast_1d(np.asarray(result.signals.get(name, np.nan), dtype=np.float64))
             if ref.shape == got.shape and not np.allclose(ref, got, atol=1e-9):
-                problems.append(f"replay step {i}: signal {name!r} differs under the same seed")
+                problems.append(
+                    f"{replay_prefix}replay step {i}: signal {name!r} differs "
+                    "under the same seed"
+                )
                 break
 
     return problems

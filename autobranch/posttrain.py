@@ -1,52 +1,19 @@
-"""LoRA post-training of a base model with critic-free RL (GRPO).
+"""LoRA post-training with critic-free RL (GRPO).
 
-This is the `grpo_lora` trainer: the path a run takes when a constraint says
-"must posttrain Qwen/Qwen3-4B". `Constraints.parse` puts the repo id in
-`spec.policy.base_model` and flips `spec.trainer` to `grpo_lora`
-(`spec.with_base_model`); `trainer.trainer_for` then hands the branch loop
-`train` from this module, with the same signature and the same `TrainResult`
-as the PPO trainer so nothing above it has to know which one it got.
+Selected when a constraint says "must posttrain <repo id>". Same signature and
+TrainResult as the PPO trainer, so nothing above it knows which it got.
 
-Four decisions here are load-bearing, and each one is a rejection of an
-obvious alternative.
+An action is one masked token: logits at the last position are restricted to
+the action vocabulary, so an illegal action cannot be represented and the
+reward never needs an invalid-move penalty.
 
-**An action is a masked token, never parsed text.** The policy is the base LM
-plus a LoRA adapter. To act, it forwards one prompt, takes the logits at the
-last position, **restricts them to the action vocabulary** -- one token per
-action index -- and samples. It never generates free text that then has to be
-parsed back into a move. Free generation is what forces an "invalid move"
-penalty into the reward, and that penalty then competes with the reward terms
-an agent is actually searching over: the measurement gets worse so that the
-parser can be lazy. Masking makes an illegal action unrepresentable, so the
-reward config never has to mention one.
+No critic. Advantages are group-relative over G samples of a state. A group
+whose samples all score alike teaches nothing, so
+`zero_variance_group_fraction` is in every metrics line.
 
-**No critic.** Advantages are group-relative: for one state, sample `G`
-completions, take each one's return under the composed reward, and use
-`(r - mean) / (std + eps)` within the group. A value head on a 4B base model
-is another 4B of gradient to tune, for a baseline that `G` samples already
-estimate. The honest cost of this choice is a group where every sample scores
-identically -- it has zero advantage for every member and teaches nothing --
-so `zero_variance_group_fraction` is in every metrics line. A run whose groups
-are mostly degenerate is not learning slowly, it is not learning.
-
-**Weights land on the Volume once.** `ensure_base_model` snapshots the repo
-into `autobranch-data` under `models/<escaped-repo-id>/` and every later
-branch reuses it. The download goes to a temporary directory and is moved into
-place with `os.replace` only after a completion marker is written *inside* it,
-so a half-finished download can never be mistaken for a usable model and two
-branches racing on the same repo cannot interleave into one corrupt tree.
-
-**The heavy dependencies are optional and named.** `torch`, `transformers`,
-`peft` and `huggingface_hub` are not in the framework's base image; a bundle
-that wants this trainer declares them in `image.pip`. So every one of them is
-imported inside a function, and a missing one raises an error naming the exact
-manifest key and requirement to add. This module itself imports with none of
-them installed -- `tests/test_posttrain.py` runs that check in a subprocess
-with the imports blocked.
-
-Progress is measured in environment steps against the objective, never in
-throughput. Tokens per second lives under `diagnostics` next to the same
-warning the PPO trainer carries.
+Base weights are snapshotted to the Volume once and reused. torch,
+transformers, peft and huggingface_hub are optional, so every import of them
+is function-local and names the manifest key to add when missing.
 """
 
 import json
@@ -891,11 +858,6 @@ def _gradient_phase(
     plus `kl_coef * KL(policy || reference)`, where the reference is this same
     model with the adapter switched off. No value loss, because there is no
     value function.
-
-    The KL is the full categorical divergence over the action vocabulary, not
-    a one-sample estimator: the vocabulary has a handful of entries, so the
-    exact quantity costs nothing and a reported KL that is actually an estimate
-    with its own variance is the kind of number people stop trusting.
     """
     torch = _import_or_explain("torch", "torch>=2.2")
     n = len(samples)
@@ -1012,19 +974,6 @@ def train(
     until `steps_done >= steps` -- so a second call on a resumed workspace
     asking for the same number is a no-op rather than a doubling, which is
     what the branch loop relies on.
-
-    `steps` counts environment transitions that entered a return. A collection
-    is `group_size` rollouts of up to `episode_steps` steps over `n_envs`
-    lanes, so the last collection may overshoot.
-
-    Resuming is the default because a branch is a snapshot of `workspace`: a
-    child mounts its parent's directory and calls `train` again, usually with a
-    different reward over the inherited adapter. That is a fork, not an error,
-    so a changed reward fingerprint is recorded in `state.json` rather than
-    rejected.
-
-    `RewardError` from a malformed config propagates untouched -- the agent
-    loop feeds it back as a correction turn.
     """
     hyp = GRPOHyper.parse(hyper)
     ws = PostTrainWorkspace(Path(workspace))

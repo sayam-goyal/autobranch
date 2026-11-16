@@ -1,31 +1,16 @@
 """The web backend: one origin for the JSON API and the static frontend.
 
-Three decisions in here are not style, they are scars.
+No `from __future__ import annotations` in this module. FastAPI resolves
+endpoint annotations against module globals, and the FastAPI types are
+imported lazily inside `build_api`, so stringised annotations would not
+resolve and routes would stop dispatching with a bare 500 and no traceback.
 
-**No `from __future__ import annotations` in this module.** FastAPI resolves an
-endpoint's parameter annotations against the *module* globals. With the future
-import every annotation becomes a string, and the FastAPI types below are
-imported lazily inside `build_api` (so that importing this module does not
-require fastapi), so the names would not be found. The route then stops
-dispatching and the only symptom is a bare HTTP 500 with no traceback. Keep
-annotations as real objects; the handlers are defined inside `build_api` and
-work precisely because annotations are evaluated eagerly.
+The ASGI entrypoint lives in `app.py` at the repo root. A Modal entrypoint
+inside a package the image also mounts is uploaded twice, and the container
+imports two module objects with two separate `modal.App`s.
 
-**The ASGI entrypoint lives outside this package**, in `app.py` at the
-repository root. A Modal entrypoint inside a package that the image also
-mounts is uploaded twice, and the container ends up importing two distinct
-module objects with two separate `modal.App`s. See the Modal notes in the README.
-
-**A bundle is rejected here or nowhere.** `POST /api/runs` parses the
-manifest, loads the environment and steps it before any resource is created,
-and returns the whole problem list with HTTP 400. The predecessor project
-burned six training runs on a measurement that was wrong from the first
-minute; a validator that answers in the browser is worth hours.
-
-Updates are **polled**, not pushed: `GET /api/runs/{id}` returns the whole run
-document and the frontend asks again every few seconds. Polling real state is
-README lesson 8 -- every silent failure in the predecessor project was
-caught by comparing counters, never by a completion notification.
+A bundle is rejected here or nowhere: `POST /api/runs` parses the manifest,
+loads the environment and steps it.
 """
 
 import base64
@@ -95,7 +80,6 @@ class SubmissionError(ValueError):
 
 class LaunchError(RuntimeError):
     """The bundle was good but the run could not be started."""
-
 
 # ---------------------------------------------------------------------------
 # bundles
@@ -413,7 +397,7 @@ def _forget_bundle_modules(before: set[str], bundle_dir: str) -> None:
     The web container is long-lived and two bundles can both define
     `grid_env`. Leaving the first one cached would validate the *previous*
     submission's code and report it as this one's -- the same two-module-
-    objects confusion as README lesson 1, in a different disguise.
+    objects confusion, in a different disguise.
     """
     root = os.path.abspath(bundle_dir)
     for name in set(sys.modules) - before:
@@ -500,7 +484,6 @@ def _null_launcher(spec: EnvironmentSpec, constraints: Constraints, budget: Budg
     submission gate without Modal. A run launched this way stays `pending`;
     the real launcher is `modal_launcher`.
     """
-
 
 def submit(
     registry: Registry,
@@ -633,16 +616,6 @@ def _seeded_runs(enabled: bool = True) -> dict[str, Any]:
     states exactly which parts are measured and which are reconstructed. Served
     through the same API and renderer as a live run, so the artifact path is
     exercised rather than mocked.
-
-    Both are here on purpose, because they disagree. Rocket League found the
-    reward was everything: one weight moved the objective 24 points. Tetris
-    found the reward was a null -- six configurations across two rewrites, all
-    exactly 0.000 -- and that what mattered was a representation change a reward
-    search cannot reach. A framework that only ships the case where it won is
-    not telling anyone anything.
-
-    Each module is independent and any failure to import one must not take the
-    other with it, so they are loaded separately.
     """
     if not enabled:
         return {}
@@ -1107,7 +1080,7 @@ def modal_launcher(spec: EnvironmentSpec, constraints: Constraints, budget: Budg
     """Spawn the tree driver by *name*, never by importing the entrypoint.
 
     `app.py` lives outside this package precisely so it is not imported twice
-    (README lesson 1). Importing it from here to get at `spawn_run` would
+    Importing it from here to get at `spawn_run` would
     recreate that bug, so the function is looked up on the deployed app
     instead.
     """

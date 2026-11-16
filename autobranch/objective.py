@@ -1,30 +1,16 @@
 """The immutable measurement.
 
-Every number this module produces is the number a branch is ranked by, so the
-module is built around two rules.
+Every number here is what a branch is ranked by, so two rules hold.
 
-**It imports no reward code.** Not `autobranch.reward`, not
-`autobranch.trainer`, not transitively through the environment's evaluator.
-`tests/test_objective_independence.py` parses the import graph with `ast` and
-fails if that ever stops being true. Without that wall an agent searching
-reward space can improve its own score by editing what "score" means, and the
-search becomes a loop that congratulates itself. The practical cost of the
-wall is visible below: this module rebuilds the policy network from the
-checkpoint's own `arch` record instead of importing the trainer's class.
+It imports no reward code, directly or transitively.
+`tests/test_objective_independence.py` parses the import graph and fails if
+that stops being true. Without the wall, an agent searching reward space could
+improve its score by editing what "score" means. The cost is visible below:
+the policy is rebuilt from the checkpoint's own `arch` record rather than by
+importing the trainer's class.
 
-**Every number carries its provenance.** `ObjectiveScore.command` is a
-runnable command line that reproduces the score, and this module has a
-`__main__` so that command is real rather than decorative.
-
-Two things measured on purpose, both lessons from the predecessor project:
-
-* Scores come from a **fixed seed bank** derived from `seed` alone, so two
-  branches are compared on identical episodes. A per-run random seed turns a
-  ranking into a coin flip with extra steps.
-* Both the **stochastic and deterministic** policy modes are reported.
-  `argmax` of an untrained network is a constant policy, which can score
-  anywhere from 0 to accidentally-decent and tells you nothing about the
-  weights. A large gap between the two modes is information, not noise.
+Every number carries its provenance. `ObjectiveScore.command` reproduces the
+score, and this module has a `__main__` so that command is real.
 """
 
 import argparse
@@ -53,7 +39,6 @@ PolicyFn = Callable[[np.ndarray], np.ndarray]
 
 class ObjectiveError(RuntimeError):
     """Raised when a measurement cannot be made (never when it is merely bad)."""
-
 
 @dataclass(frozen=True)
 class ObjectiveScore:
@@ -201,16 +186,6 @@ def load_checkpoint_policy(
     `lm_policy.load_policy`, which returns the same duck type -- callable,
     `reseed`, `deterministic` -- so an environment's evaluator never learns
     which trainer produced the thing it is scoring.
-
-    `lm_policy` exists precisely so this import is allowed: it holds the
-    inference half of post-training and imports no reward code, while
-    `posttrain` imports `autobranch.reward` and so may never be reached from
-    here. `tests/test_objective_independence.py` walks the import graph from
-    this module and would fail on `posttrain`; the point of that wall is that
-    an agent which can reach its own measurement can make itself look good
-    without getting good. Dispatching through a dynamic import would have hidden
-    the edge from the graph walker rather than respecting it, which is why the
-    import below is a plain one.
     """
     path = Path(checkpoint_path)
     if not path.exists():
@@ -353,9 +328,6 @@ def evaluate(
     and random stochastically has a sharp policy; the reverse means the argmax
     has collapsed onto one action, which is the failure mode that cost the
     predecessor project six training runs.
-
-    `budget` overrides `spec.objective.budget` (that is how a cheap mid-search
-    screen and an expensive final score share one evaluator).
     """
     merged_budget = dict(spec.objective.budget)
     merged_budget.update(budget or {})

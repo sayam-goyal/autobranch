@@ -1,24 +1,14 @@
-"""The agent tree: what runs where, and who is allowed to stop whom.
+"""The agent tree: what runs where, and who may stop whom.
 
-Topology. A **branch is a sandbox**. The root sandbox receives the environment
-spec and the user's constraints; inside it an agent loop proposes a reward,
-trains, evaluates against the immutable objective, and decides what to do
-next. Forking snapshots the branch's workspace directory and starts a child
-sandbox with that snapshot mounted, so the child inherits weights, optimizer
-state and history while writing nowhere the parent can see. The parent keeps
-running throughout -- verified, and the reason `snapshot_directory` is used
-here rather than `snapshot_filesystem`, which terminates its sandbox.
+A branch is a sandbox. The root receives the spec and the constraints; its
+agent proposes a reward, trains, evaluates against the immutable objective and
+decides what to do next. Forking snapshots the workspace and starts a child
+with it mounted, so the child inherits weights and history while writing
+nowhere the parent can see. The parent keeps running.
 
-Who stops a branch. Two independent authorities, deliberately:
-
-* the **agent** may call `abandon` when it judges its line is going nowhere;
-* the **orchestrator** abandons a branch regardless of what its agent thinks,
-  when budget is exhausted, the global deadline is near, depth is capped, or
-  the objective has not improved in K evaluations.
-
-Relying on the agent alone would mean an optimistic model could burn the whole
-budget on one hopeless line. Relying on the orchestrator alone would discard
-the judgement that makes the search better than a grid sweep.
+Two authorities stop a branch, deliberately: the agent may abandon its own
+line, and the orchestrator abandons one regardless when budget, deadline,
+depth or patience runs out.
 """
 
 import json
@@ -301,7 +291,6 @@ def initial_reward(spec: EnvironmentSpec) -> dict[str, Any]:
 
 class ToolError(RuntimeError):
     """A tool call the agent got wrong; fed back as a correction turn."""
-
 
 def validate_action(action, spec: EnvironmentSpec) -> None:
     """Shared gate so every call site rejects the same things the same way."""

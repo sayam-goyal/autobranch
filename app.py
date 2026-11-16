@@ -1,30 +1,17 @@
-"""Modal entrypoint for autobranch: the ASGI web app, plus a CLI for the same
-operations.
+"""Modal entrypoint: the ASGI web app, plus a CLI for the same operations.
 
-**This file is at the repository root, outside the `autobranch` package, and
-it must stay there.** The image mounts the package with
-`add_local_python_source("autobranch")`. A Modal entrypoint living *inside*
-that package would be uploaded twice -- once as the entrypoint, once as part
-of the mounted package -- and the container would then import two distinct
-module objects holding two distinct `modal.App`s. Routes registered on one app
-are invisible to the other, and the symptom is a bare HTTP 500 with no
-traceback anywhere. README lesson 1, paid for in the predecessor project.
+This file is at the repository root, outside the `autobranch` package, and it
+must stay there. The image mounts the package with
+`add_local_python_source("autobranch")`, so an entrypoint inside the package
+would be uploaded twice and the container would import two module objects with
+two separate `modal.App`s. Routes on one are invisible to the other, and the
+symptom is a bare HTTP 500 with no traceback.
 
-Everything here is `modal 1.6.4` API: `scaledown_window`, `max_containers`,
+Everything here is modal 1.6.4 API: `scaledown_window`, `max_containers`,
 `modal.concurrent`. There is no `allow_concurrent_inputs`.
 
-    modal serve app.py                      # dev, hot reload
-    modal deploy app.py                     # the real thing
-
-    modal run app.py::cli_validate --bundle examples/gridworld
-    modal run app.py::cli_submit   --bundle examples/gridworld \\
-        --constraints "stay under $25" --usd 25 --hours 2
-    modal run app.py::cli_status   --run-id run-abc123
-    modal run app.py::cli_artifact --run-id run-abc123 --out ./out
-
-The CLI exists so the product is testable without a browser: every path below
-goes through exactly the same `autobranch.server.submit` the web form does, so
-the two cannot drift.
+    modal serve app.py      # dev, hot reload
+    modal deploy app.py     # production
 """
 
 import base64
@@ -110,7 +97,7 @@ def spawn_run(run_id: str, spec_dict: dict, constraints_dict: dict, budget_dict:
     sandbox owns its agent loop and forks its own children. The run is marked
     `running` only once a sandbox genuinely exists -- a `running` run with no
     agent behind it is exactly the kind of unverified completion signal
-    README lesson 8 says never to trust.
+    Never trust a completion event.
     """
     from autobranch.branch import root_branch_id
     from autobranch.orchestrator import Budget, initial_reward
@@ -180,14 +167,6 @@ def _launcher(spec, constraints, budget, run_id: str) -> str:
     app, which is right for the long-lived web container. Inside a function
     defined here the object is already hydrated, so spawning it directly also
     resolves under an ephemeral `modal run`, where no deployed app exists.
-
-    It does not *survive* one, though, and that distinction cost a launch. A
-    plain `modal run` stops its ephemeral app as soon as the local entrypoint
-    returns, which kills this spawn before the branch sandbox exists -- the
-    registry ends up holding a queued run with zero branches and zero
-    containers, which reads like a crash and is actually a lifetime. Submit
-    with `modal run --detach` (what examples/sf3/launch.sh does) or against a
-    deployed app.
     """
     call = spawn_run.spawn(
         run_id=run_id,
@@ -286,10 +265,6 @@ def finalize_run(run_id: str) -> dict:
     entire deliverable. This is that missing step, and it is idempotent: a
     second call over an existing artifact just rewrites it from the same
     records.
-
-    It runs as a Function rather than inside a branch because it needs the
-    whole tree, and no single branch knows when the last of its siblings has
-    finished.
     """
     import os
     import shutil
@@ -478,12 +453,6 @@ def restart_run(run_id: str) -> dict:
     path that only exists inside a Modal container. `autobranch.supervise`
     has the same constraint for the same reason; this is the entry point that
     satisfies it from a laptop.
-
-    The point of restarting *in place* is that `grpo_full` resumes: same run
-    id means the same durable root, so the branch loads its own HF export and
-    continues from the step it reached instead of starting over. That matters
-    after a crash late in a run -- the SF3 branch had 52,800 steps of training
-    behind it when it died on its first evaluate call.
     """
     from autobranch.supervise import restart
 
@@ -508,7 +477,7 @@ def cli_status(run_id: str, events: int = 12):
     """Poll a run's real state.
 
     Reads the registry Dicts directly from the client: no container, and no
-    completion event to take anyone's word for (README lesson 8).
+    completion event to take anyone's word for.
     """
     from autobranch.registry import Registry
 

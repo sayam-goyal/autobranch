@@ -54,7 +54,7 @@ from autobranch.reward import compile_reward
 from autobranch.spec import EnvironmentSpec, with_base_model
 
 REPO = Path(__file__).resolve().parent.parent
-BUNDLE = REPO / "examples" / "wordguess"
+BUNDLE = REPO / "tests" / "fixtures" / "wordguess"
 MANIFEST = BUNDLE / "autobranch.yaml"
 
 BASE_MODEL = "Qwen/Qwen3-4B"

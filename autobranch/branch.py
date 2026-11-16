@@ -1,33 +1,20 @@
 """Git-worktree semantics on Modal Sandboxes.
 
-The primitive pair, verified empirically before any of this was written:
-
-    snap  = parent.snapshot_directory("/workspace")   # parent.poll() is None
+    snap  = parent.snapshot_directory("/workspace")
     child = Sandbox.create(...)
-    child.mount_image("/workspace", snap)             # child sees parent state
-    # child writes and parent writes are isolated, copy-on-write
+    child.mount_image("/workspace", snap)
 
-That is a worktree: the child inherits weights, optimizer state, curriculum
-and history, and neither side can see the other's subsequent writes.
+The child inherits weights, optimizer state and history; neither side sees the
+other's later writes. `snapshot_filesystem` would terminate the parent, so it
+is never used here.
 
-`snapshot_filesystem()` is the wrong primitive here -- it terminates the
-sandbox it snapshots, which would mean a fork costs the parent its run.
-`snapshot_directory()` does not. Directory snapshots are *not* named objects,
-so the only durable reference to one is its `object_id`; it must be written to
-the registry at the moment it is taken or the branch becomes unreachable.
+A directory snapshot is not a named object: its `object_id` is the only
+durable reference, so it goes to the registry the moment it is taken.
 
-Three guards here are paid-for lessons rather than defensive habits:
-
-1. `fork` always mounts a snapshot. It never points a second sandbox at a
-   directory a live sandbox is writing. Two writers on one workspace corrupt
-   the artifact silently -- there is no error, just wrong weights -- so the
-   only way to be safe is to make sharing unexpressible in the API.
-2. Forking off a terminated parent requires an explicit snapshot id. A dead
-   sandbox cannot produce one, and the failure would otherwise land as an
-   opaque RPC error after the child had already been billed for.
-3. `terminate` is idempotent, because abandonment arrives from two directions
-   at once (the agent abandoning itself, and the pruner abandoning it) and
-   the second caller must not see an exception.
+`fork` always mounts a snapshot, never a directory a live sandbox is writing --
+two writers on one workspace corrupt the artifact with no error at all.
+`terminate` is idempotent, because abandonment arrives from the agent and the
+pruner at the same time.
 """
 
 import json
@@ -47,10 +34,8 @@ BRANCH_ID_RE = re.compile(r"^b\d+(?:\.\d+)*$")
 class BranchError(RuntimeError):
     """Any violation of branch lifecycle rules."""
 
-
 class TerminatedParentError(BranchError):
     """A fork was requested from a parent that can no longer be snapshotted."""
-
 
 class ExecError(BranchError):
     """A command run inside a sandbox failed, or did not emit the JSON asked of it."""
@@ -290,11 +275,6 @@ def snapshot(handle_or_sandbox: Any, *, ttl: int | None = None, path: str = WORK
     id is the *only* handle on the snapshot -- directory snapshots are not
     named objects -- so the caller must persist it (registry, `snapshot_id`)
     in the same breath.
-
-    `ttl=None` means "Modal's default retention" (30 days) rather than
-    "forever": `snapshot_directory` reads `ttl=None` as indefinite retention,
-    which would quietly accumulate storage for every branch ever forked, so
-    the argument is omitted instead of forwarded.
     """
     sandbox = resolve_sandbox(handle_or_sandbox, sandboxes=sandboxes)
     kwargs: dict[str, Any] = {}

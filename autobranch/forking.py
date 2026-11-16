@@ -1,22 +1,13 @@
 """Forking a live branch from inside it.
 
-A sandbox can read its own id from `MODAL_SANDBOX_ID` (verified), which is what
-makes recursive self-forking possible: a branch snapshots its own workspace,
-starts a sibling sandbox with that snapshot mounted, and hands it the child's
-identity through environment variables. No central supervisor has to broker it.
+A sandbox reads its own id from `MODAL_SANDBOX_ID`, so a branch can snapshot
+its own workspace, start a sibling with that snapshot mounted, and hand over
+the child's identity through environment variables. No central supervisor
+brokers it.
 
-Credentials. Both of these -- reaching the registry and creating a sandbox --
-need workspace credentials inside the sandbox, supplied by the
-`autobranch-modal-auth` secret. That is a real grant: a branch can do anything
-the workspace token can. It is bounded by being the user's own workspace, by
-every resource name being `autobranch-`prefixed, and by the fact that the
-agent never writes shell commands -- it only picks from a fixed tool set, and
-`fork` is the only tool that touches infrastructure at all.
-
-Snapshot choice. `snapshot_directory` keeps the parent running;
-`snapshot_filesystem` would terminate it, which would turn every fork into a
-hand-off rather than a branch. That difference was measured before this module
-was written.
+Both steps need workspace credentials inside the sandbox, from the
+`autobranch-modal-auth` secret. `snapshot_directory` keeps the parent running;
+`snapshot_filesystem` would terminate it, turning every fork into a hand-off.
 """
 
 import json
@@ -31,7 +22,6 @@ SNAPSHOT_TTL = 7 * 24 * 3600  # a week: long enough to roll back, short enough t
 
 class ForkError(RuntimeError):
     """Raised when a fork cannot be completed; always recoverable by the agent."""
-
 
 def self_sandbox():
     """The `Sandbox` object for the process we are running inside.
@@ -95,10 +85,6 @@ def _rollback_self(snapshot_id: str) -> dict[str, Any]:
     The previous version swallowed the unmount error and then attempted a mount
     that could only fail with `path already has a mount` -- which killed a live
     branch that was otherwise healthy.
-
-    A root branch has nothing mounted at `/workspace` (it is plain sandbox
-    filesystem) and Modal errors on unmounting that, so "nothing to unmount" is
-    expected and distinguished from a real failure.
     """
     import modal
 
@@ -278,11 +264,6 @@ def ensure_runtime_on_volume(*, data_root: str | None = None) -> str:
     would start with `ModuleNotFoundError: No module named 'autobranch'`.
     `add_local_python_source` cannot help: it needs local files at build time,
     and these sandboxes are created at runtime from a deployed app.
-
-    So the runtime travels on the volume that every branch already mounts, and
-    `PYTHONPATH` points at it. Copying from the caller's own installed package
-    means the sandboxes always run the same code as the launcher, with no
-    second publishing step to forget.
     """
     import shutil
 

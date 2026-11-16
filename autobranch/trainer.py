@@ -1,28 +1,16 @@
 """Reward composition plus PPO. The only place a reward exists at all.
 
-Two things live here and they are deliberately separate:
+The environment hands over signals, `autobranch.reward` compiles the agent's
+JSON config into a callable over them, and this module calls it. The trainer
+never reads environment internals and the environment never sees a reward,
+which is what makes reward search delegable.
 
-1. **Composition.** The environment hands over signals; `autobranch.reward`
-   compiles the agent's JSON config into a callable over those signals; this
-   module calls it. The trainer never reads environment internals and the
-   environment never sees a reward, which is the whole reason reward search
-   can be delegated to a model.
-2. **Optimisation.** An env-agnostic PPO driven entirely by `spec.policy`, so
-   a new environment needs no trainer changes.
+The PPO itself is env-agnostic, driven entirely by `spec.policy`, so a new
+environment needs no trainer changes.
 
-Two guards are baked in because the predecessor project paid for both:
-
-* **Gradient steps per collection are explicit.** `epochs * minibatches`
-  gradient steps run on every rollout, exposed as
-  `PPOHyper.grad_steps_per_collection` and written into every metrics line.
-  The predecessor ran 16 and starved learning; the default here is 40.
-* **Per-term reward accounting is logged every iteration.** A training reward
-  climbing while the real objective falls is invisible without it -- that is
-  precisely the failure where six configs read healthy and all scored 0.000.
-
-Progress is measured in environment steps against the objective, never in
-throughput. `env_steps_per_second` is recorded under `diagnostics` so nobody
-mistakes it for learning.
+Gradient steps per collection are explicit (`epochs * minibatches`) and go
+into every metrics line, because a run that looks stalled is usually
+under-updating rather than under-rewarded.
 """
 
 import json
@@ -453,15 +441,6 @@ def train(
     unit comparable between branches with different `n_envs`. Training runs
     until `steps_done >= steps`, so the last collection may overshoot by up to
     `n_envs * n_steps`.
-
-    Resuming is the default because a branch is a snapshot of `workspace`: a
-    child mounts its parent's directory and calls `train` again, possibly with
-    a different reward config over the inherited weights. That is a fork, not
-    an error, so a changed reward fingerprint is recorded in `state.json`
-    rather than rejected.
-
-    `RewardError` from a malformed config propagates untouched -- the agent
-    loop feeds it back as a correction turn.
     """
     hyp = PPOHyper.parse(hyper)
     ws = Workspace(Path(workspace))

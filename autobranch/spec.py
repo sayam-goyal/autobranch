@@ -34,7 +34,6 @@ BUILTIN_TRAINERS = ("ppo", "grpo_lora", "grpo_full")
 class SpecError(ValueError):
     """Raised for any malformed manifest, with a path into the document."""
 
-
 def _require(cond: bool, where: str, msg: str) -> None:
     if not cond:
         raise SpecError(f"{where}: {msg}")

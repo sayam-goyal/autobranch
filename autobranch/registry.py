@@ -1,26 +1,15 @@
 """Run and branch state: the source of truth for the tree and the web API.
 
-The shape of this module is dictated by one failure from the project this
-framework generalizes: a single shared state file under six concurrent
-writers ended up holding 29 entries that all belonged to *one* writer. The
-other five writers' work was not corrupted, it was absent, and nothing
-reported an error. Read-modify-write on a shared blob loses data silently.
+There is no shared blob. One key, one writer:
 
-So there is no shared blob here. The layout is:
+    run/<run_id>                   run header
+    run/<run_id>/best              best so far
+    <run_id>/branch/<branch_id>    one key per branch
+    <run_id>/event/<writer>        one append-only shard per writer
 
-    run/<run_id>                      run header, written by the orchestrator
-    run/<run_id>/best                 best-so-far, its own key
-    <run_id>/branch/<branch_id>       one key per branch, one writer per key
-    <run_id>/event/<writer>           one append-only shard per writer
-
-Every write touches exactly one key, and every key has exactly one writer, so
-two branches updating at the same time cannot overwrite each other no matter
-how their calls interleave. Anything that looks like a total -- run spend,
-the event log -- is *derived at read* by scanning keys, never maintained as a
-counter that two writers would have to share.
-
-Everything stored is JSON-serialisable, because it travels through a
-`modal.Dict` and out of an HTTP endpoint unchanged.
+Two branches updating at once cannot overwrite each other however their calls
+interleave. Anything that looks like a total -- run spend, the event log -- is
+derived at read by scanning keys, never kept as a counter.
 """
 
 import copy

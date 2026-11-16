@@ -1,24 +1,14 @@
 """Make the registry agree with which sandboxes are actually alive.
 
-This exists because of a specific, repeated failure. A branch records
-`status="running"` when it starts and updates that record from inside its own
-sandbox. If the sandbox dies in a way that does not run Python -- Modal
-preemption, an OOM kill, a lost worker -- nothing ever writes the terminal
-status, and the registry reports a healthy running branch forever.
+A branch records `status="running"` and updates that record from inside its
+own sandbox. If the sandbox dies without running Python -- preemption, an OOM
+kill, a lost worker -- nothing writes the terminal status and the registry
+reports a healthy branch forever. That is how a preempted run went unnoticed
+for eleven hours: the monitor polled the registry, and the registry had no way
+to know.
 
-That is not a cosmetic problem. It is the reason an SF3 run that was preempted
-37 minutes in went unnoticed for **eleven hours**: the monitor polled the
-registry, the registry said `running`, and the registry had no way to know.
-Polling real state rather than trusting a record is README lesson 8, and
-the registry is a record.
-
-So: ask Modal which sandboxes are alive, and mark the branches whose sandboxes
-are not. Read-only unless `apply=True`, because a reconciler that guesses
-wrong and abandons a live branch is worse than one that reports.
-
-    python -m autobranch.reconcile                      # report every run
-    python -m autobranch.reconcile --run-id run-xxxx    # one run
-    python -m autobranch.reconcile --apply              # write the corrections
+So ask Modal which sandboxes are alive and mark the branches whose sandboxes
+are not. Read-only with respect to training.
 """
 
 import argparse

@@ -1,26 +1,14 @@
 """Client for the Kimi reasoning model behind a Modal Shared Endpoint.
 
 Stdlib only -- `urllib.request`, no `openai`, no `requests`. Agents run inside
-whatever image the *environment bundle* asked for, and that image is not ours
-to add dependencies to, so this module must import in a bare sandbox.
+whatever image the environment bundle asked for, and that image is not ours to
+add dependencies to, so this module must import in a bare sandbox.
 
-Two properties of the live endpoint shape the whole design and are measured,
-not assumed:
-
-* **It is a reasoning model.** The response message carries `content` *and*
-  `reasoning_content`, and reasoning is emitted first. At `max_tokens=16` all
-  16 completion tokens were reasoning and `content` came back as the empty
-  string; at `max_tokens=600`, 102 of 143 were still reasoning. An empty
-  `content` is therefore almost never "the model had nothing to say" -- it is
-  "the budget ran out mid-thought". That case gets its own exception
-  (`KimiTruncated`) and one automatic retry at double budget, because
-  returning "" to a caller that expected a JSON action turns a billing
-  accident into a silent logic bug.
-* **Prefix caching is routing-dependent.** The endpoint keeps a KV cache per
-  worker, so an agent loop only benefits if its requests land on the same one.
-  `Modal-Routing-Affinity-Key` is sent on *every* request; one key per branch
-  means a branch's growing transcript is re-read at $0.20/Mtok instead of
-  $2.00/Mtok.
+It is a reasoning model: the response carries `content` and
+`reasoning_content`, and reasoning comes first. At `max_tokens=16` all 16
+completion tokens were reasoning and `content` came back empty. An empty
+`content` is almost never "nothing to say", it is "the budget ran out
+mid-thought", so it raises rather than returning silence.
 """
 
 import json
@@ -57,7 +45,6 @@ def _sleep(seconds: float) -> None:
 class KimiError(RuntimeError):
     """Any failure talking to the endpoint, with the response body attached."""
 
-
 class KimiTruncated(KimiError):
     """The model spent its token budget reasoning and never produced content.
 
@@ -65,10 +52,8 @@ class KimiTruncated(KimiError):
     from a successful empty answer on purpose -- see the module docstring.
     """
 
-
 class KimiRateLimited(KimiError):
     """HTTP 429. Retried with exponential backoff and jitter."""
-
 
 @dataclass(frozen=True)
 class Usage:

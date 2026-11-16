@@ -1,30 +1,12 @@
 """Running a post-trained policy: everything the scorer needs, and no reward.
 
-Split out of `posttrain.py` for one structural reason. `objective.py` must be
-able to load and run a `grpo_lora` checkpoint, and `objective.py` may not
-import reward code -- `tests/test_objective_independence.py` walks the import
-graph and fails if it ever does, because an agent that can reach its own
-measurement can make itself look good without getting good. `posttrain.py`
-imports `autobranch.reward` (it has to; composing the reward is its job), so
-`objective.py` importing `posttrain` would have torn that wall down.
+Split out of `posttrain.py` so `objective.py` can load and run a checkpoint
+without importing reward code. `posttrain.py` imports `autobranch.reward`
+because composing the reward is its job, so `objective.py` importing it would
+breach the wall that `tests/test_objective_independence.py` enforces.
 
-Dynamic import would have "solved" it by hiding the edge from the graph
-walker. That is strictly worse than the problem: the wall would still be
-breached at runtime, just invisibly. So the inference half lives here instead,
-and this module imports nothing that can compose a reward -- which a test
-asserts directly rather than leaving to review.
-
-What that means in practice: this module knows how to turn an observation into
-a prompt, restrict logits to the action vocabulary, sample an action, and
-rebuild all of that from a checkpoint record plus the base weights on the
-Volume. It does not know what a reward is, what a group is, or what an
-advantage is. `posttrain.py` imports and re-exports every name here, so its
-public API is unchanged and `grpo_lora` callers never need to know about the
-split.
-
-The heavy dependencies -- torch, transformers, peft, huggingface_hub -- are
-not in the framework's base image, so each is imported inside a function and a
-missing one raises an error naming the exact manifest key to fix.
+A dynamic import would have hidden the edge from the graph walker rather than
+removed it, which is worse: the wall would still be breached, just invisibly.
 """
 
 import importlib
@@ -59,10 +41,8 @@ REQUIRED_PIP = (
 class MissingDependencyError(RuntimeError):
     """A heavy dependency this trainer needs is absent from the image."""
 
-
 class PostTrainError(RuntimeError):
     """A post-training run cannot proceed (never raised for a merely bad reward)."""
-
 
 def _import_or_explain(module: str, requirement: str):
     """Import `module`, or explain precisely how to make it importable.
@@ -456,14 +436,6 @@ def serialize_observation(
     about the prompt by one space, the evaluated policy is not the trained one
     and the score is quietly wrong. `PROMPT_VERSION` and this template travel
     inside the checkpoint for exactly that reason.
-
-    The format is env agnostic -- numbers and the legal labels, nothing about
-    what the numbers mean. That is deliberate: a per-environment prompt would
-    be a second place where environment semantics live, and the framework's
-    whole bet is that the environment's semantics stay inside the environment.
-
-    Rounding is explicit so the string is stable across float32 and float64
-    observations of the same episode; `+ 0.0` normalises `-0.00` to `0.00`.
     """
     arr = np.asarray(obs, dtype=np.float64).reshape(-1)
     p = int(precision)
@@ -613,17 +585,6 @@ def _adapter_from_record(peft: Any, base: Any, arch: dict[str, Any], tensors: di
     directory would mean the framework's deliverable could be scored during the
     run and never again, which is the same class of bug as checkpoints dying in
     `/workspace`.
-
-    It works because the record is complete: `arch.lora` carries the exact
-    config the trainer used and `payload["policy"]` carries the trained
-    tensors. The config is rebuilt with the same keyword shape `train` passes to
-    `LoraConfig`, so the module layout matches and the keys land.
-
-    The failure this guards is specific and silent. LoRA initialises its `B`
-    matrices to zero, so an adapter whose weights do not load is not a broken
-    model -- it is exactly the base model, which runs fine and scores like an
-    untrained policy. A reward search reading that number concludes the reward
-    was bad. So a load that applies no tensors raises here instead.
     """
     if not tensors:
         raise PostTrainError(
@@ -677,12 +638,6 @@ def load_policy(
     against the Volume, or re-downloaded if this container has never seen it),
     the LoRA weights, the action vocabulary and the prompt. No reward config,
     no hyperparameters, no manifest.
-
-    The adapter is taken from its directory when that directory is still there
-    -- the normal case mid-run, and the cheaper path -- and rebuilt from the
-    checkpoint record when it is not, which is the normal case for a downloaded
-    artifact. Either way the policy is the same one; only the source of the
-    tensors differs.
     """
     torch = _import_or_explain("torch", "torch>=2.2")
     transformers = _import_or_explain("transformers", "transformers>=4.44")
@@ -776,10 +731,6 @@ class VisionActionPolicy:
         Hadouken -- it could only learn the mapping by trial, which throws away
         everything the base model already knows about Street Fighter. The
         reproduction target shows the whole menu for the same reason.
-
-        Emitted first and identically every step so it is a shared prefix
-        across every lane and every decision, which is the cheapest thing a
-        prompt this repetitive can be.
         """
         if not self.action_names:
             return ""
@@ -840,15 +791,6 @@ def prepare_vision_processor(processor: Any) -> Any:
     longest in the batch -- so the sampled action comes from padding, and it
     comes from a *different* position depending on what else happened to be in
     the batch.
-
-    The symptom is specific and was caught by it: on the first epoch the policy
-    has not changed, so the importance ratio `exp(new_logp - old_logp)` must be
-    exactly 1.0. It measured 0.377, because collection batched eight lanes and
-    the update batched four, padding each to a different width. The gradient was
-    being computed from a ratio that meant nothing.
-
-    `posttrain._prepare_tokenizer` does this for the text path; a VL processor
-    keeps its tokenizer one level down, which is why it was missed.
     """
     tokenizer = getattr(processor, "tokenizer", processor)
     tokenizer.padding_side = "left"
@@ -878,12 +820,6 @@ def load_full_policy(
     on purpose -- 16 GiB of tensors inside a pickle would double the checkpoint
     and could not be served by anything except this framework, whereas the HF
     export is the same shape the reproduction target published and serves.
-
-    So this reads the record, finds the export (beside the checkpoint first,
-    then the absolute path recorded at save time, because an artifact gets
-    moved and a path baked in during training is the first thing to go stale),
-    and rebuilds `obs -> action` with the action vocabulary the record carries.
-    No reward config, no optimizer, no manifest.
     """
     torch = _import_or_explain("torch", "torch>=2.2")
     transformers = _import_or_explain("transformers", "transformers>=4.57")

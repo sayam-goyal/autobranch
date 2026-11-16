@@ -1,26 +1,18 @@
 """The supervisor, running on Modal instead of on someone's laptop.
 
-`python -m autobranch.supervise --loop 60` works, and dies with the terminal
-that started it. That is not a theoretical problem: a run was preempted and sat
-dead for eleven hours, and the second time the laptop that was watching it
-closed. A supervisor that depends on a laptop being open is a supervisor that
-is absent exactly when nobody is looking.
-
-So it runs here, on a schedule, server-side:
+`python -m autobranch.supervise --loop 60` works and dies with the terminal
+that started it. A run was once preempted and sat dead for eleven hours, so a
+supervisor that depends on a laptop being open is absent exactly when nobody
+is looking.
 
     modal deploy supervisor_app.py
 
 Every two minutes it asks Modal which sandboxes are alive, and if a supervised
 run's branches are all gone while its deadline has not passed, it relaunches
-the root in place -- same run id, same deadline, same reward config, resuming
+the root in place: same run id, same deadline, same reward config, resuming
 from the HF export on the Volume.
 
-Which runs to supervise lives in a `modal.Dict` rather than in this file, so
-adding or removing one does not need a redeploy:
-
-    python supervisor_app.py watch run-xxxx
-    python supervisor_app.py unwatch run-xxxx
-    python supervisor_app.py status
+Which runs to supervise lives in a `modal.Dict`, not in this file.
 """
 
 import sys
