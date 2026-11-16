@@ -1,31 +1,12 @@
 <img src="assets/banner.png" alt="autobranch" width="100%">
 
-Reward search for RL, running on Modal. You give it an environment and a
-sentence about what you want. It gives back trained weights and the numbers
-behind them.
+Reward search for RL, running on sandboxes. Give it an environment and a
+an objective and get back trained weights and final artifacts.
 
-Writing the reward is usually the slow part, and it is usually done by hand.
-This runs that search for you: a tree of agents, each one training a branch
+Creating reward functions and verifying no reward hacking occurs is tedious.
+This framework handles all of that for you using agents swarms and a tree of sandboxes, each one training a model
 with its own reward, forking the ones that work and dropping the ones that
-don't. A separate evaluator scores every branch, and the agents cannot touch
-it.
-
-## Why
-
-The project this came from trained six reward configs. All six scored 0.000
-against a fixed opponent while self-play win rate sat at 0.807 over 6,705
-matches. The self-play number was not progress. The thing that actually
-mattered was how the policy represented a decision, which had been assumed in
-the plan and never tested. Changing only that, with the reward held fixed,
-went from 0.000 to 0.990.
-
-So two rules shape everything here:
-
-- **Agents write rewards. They never write the objective.** The evaluator is
-  separate code that imports none of theirs. Reward is a means. The objective
-  is the measurement.
-- **Forking is cheap**, so testing an assumption costs about as much as
-  testing a weight.
+don't. A separate evaluator scores every branch.
 
 ## Install
 
@@ -54,10 +35,6 @@ Scoring a checkpoint yourself, outside the search:
 ```bash
 modal run tools/eval_sf3.py --run-id run-xxxx --branch-id b0 --matches 72
 ```
-
-It reads the weights off the Volume and runs the same evaluator the branch
-would. Match seeds come from a bank of eight unrelated families, because one
-family is one draw of opponents and a number from it looks tighter than it is.
 
 ## Environments
 
@@ -94,10 +71,6 @@ objective:
   budget: {matches: 100, difficulty: 8}
 ```
 
-Signals are facts, not rewards. `damage_dealt` is a number the environment
-knows. Whether dealing damage is good is the agent's guess, and the evaluator
-decides if the guess was right.
-
 ## Rewards are data
 
 A reward config is JSON, not code, so it can be diffed, hashed, and mutated
@@ -111,16 +84,12 @@ safely.
 }
 ```
 
-Validation runs before a branch launches, so a config naming a signal that
-doesn't exist costs one correction turn instead of an hour of GPU.
-
 ## Branching
 
-Each branch is a Modal Sandbox. Forking snapshots the parent's filesystem, so
+Each branch is a sandbox. Forking snapshots the parent's filesystem, so
 a child starts from the parent's weights and reward, changes one thing, and
 trains on. Branches stop themselves when their line stops paying, and the
-reason is recorded. Abandoned branches ship with the winner: they are the
-evidence the winner was a choice.
+reason is recorded.
 
 ## Trainers
 
