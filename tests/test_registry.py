@@ -299,6 +299,10 @@ def test_api_payload_matches_the_frontend_contract_exactly(backend):
         # is doing; these travel with the node so the client never scrapes the
         # event log to answer it.
         "activity", "activity_since", "sandbox_id", "best_score", "checkpoint",
+        # The durable copy of the best weights. `checkpoint` follows the
+        # trainer and goes stale the moment a branch trains past its best
+        # score, so consolidation needs this one to find anything at all.
+        "published_checkpoint",
         # Provenance: the artifact states how its headline number was measured.
         "score_command", "score_detail",
     }
@@ -489,3 +493,30 @@ def test_abandonment_is_not_failure():
         reg.update_branch("run-y", bid, status=status)
 
     assert reg.get_run("run-y").state == "succeeded"
+
+
+def test_api_payload_carries_every_field_consolidation_reads():
+    """`api_payload` hand-builds its branch dicts rather than calling
+    `to_dict`, so a new field on BranchRecord does not appear here on its own.
+
+    That is how run-25ed75aa0a's artifact broke: published_checkpoint existed
+    on the record and in the registry, but not in this payload, so the
+    consolidator saw only the sandbox-local path and refused to ship a winner
+    whose weights were sitting on the Volume.
+    """
+    reg = Registry(backend=MemoryBackend())
+    run = reg.create_run(env_name="e", objective={"name": "o", "direction": "maximize"})
+    reg.put_branch(run.run_id, BranchRecord(
+        branch_id="b0",
+        checkpoint="/workspace/checkpoints/latest.pt",
+        published_checkpoint="/data/runs/r/b0/latest.pt",
+        scores=[{"step": 1, "score": 0.9, "reward": {"weights": {"a": 1.0}}}],
+    ))
+    branch = reg.api_payload(run.run_id)["branches"][0]
+    for field_name in ("checkpoint", "published_checkpoint", "scores",
+                       "score_command", "score_detail", "best_score"):
+        assert field_name in branch, field_name
+    assert branch["published_checkpoint"] == "/data/runs/r/b0/latest.pt"
+    # and the per-score reward survives the trip, which is what makes the
+    # finished run attributable
+    assert branch["scores"][0]["reward"]["weights"]["a"] == 1.0

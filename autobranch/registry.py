@@ -735,6 +735,11 @@ class Registry:
                     "sandbox_id": b.sandbox_id,
                     "best_score": b.best_score,
                     "checkpoint": b.checkpoint,
+                    # The durable copy, which is the one consolidation can
+                    # actually fetch. Omitting it here left the artifact
+                    # builder with only the sandbox-local path and made it
+                    # refuse to ship a measured winner.
+                    "published_checkpoint": b.published_checkpoint,
                     # Provenance travels with the branch so the artifact can
                     # state how its headline number was measured. Without
                     # these the manifest said "(command not recorded)".
