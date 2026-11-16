@@ -105,6 +105,10 @@ class BranchState:
     snapshots: list[dict[str, Any]] = field(default_factory=list)
     children: int = 0
     activity: str = ""
+    #: Which branch wrote this state. A fork boots from a *snapshot of its
+    #: parent's workspace*, so the state file it loads is the parent's -- and
+    #: the per-branch accumulators in it describe the parent, not the child.
+    owner: str = ""
 
     def best(self, objective) -> float | None:
         if not self.scores:
@@ -125,20 +129,43 @@ class BranchState:
             "snapshots": self.snapshots,
             "children": self.children,
             "activity": self.activity,
+            "owner": self.owner,
         }
 
     @staticmethod
-    def load(path: str) -> "BranchState":
-        """Resume is the normal case for a forked branch, not an edge case."""
+    def load(path: str, *, owner: str = "") -> "BranchState":
+        """Resume is the normal case for a forked branch, not an edge case.
+
+        Most of this state is meant to be inherited -- the reward config, the
+        weights pointer, the score history are exactly what a fork is for.
+        Two fields are not: `spend_usd` and `tokens` are per-branch
+        accumulators, and a child that inherits them reports its parent's
+        bill as its own for as long as it lives.
+
+        That happened here. Three forked branches each published ~$16 while
+        the ledger attributed ~$1.30 to them, so a run that had truly spent
+        $22 reported $63. The budget guard reads the ledger directly and was
+        never fooled, but every off-volume reader was: the UI, the artifact,
+        and any analysis afterwards.
+        """
         try:
             with open(path) as fh:
                 raw = json.load(fh)
         except (OSError, json.JSONDecodeError):
-            return BranchState()
+            st = BranchState()
+            st.owner = owner
+            return st
         st = BranchState()
         for key in st.to_dict():
             if key in raw:
                 setattr(st, key, raw[key])
+        if owner and st.owner and st.owner != owner:
+            # Inherited from another branch: keep what a fork is for, drop
+            # what belongs to the branch that paid it.
+            st.spend_usd = 0.0
+            st.tokens = 0
+        if owner:
+            st.owner = owner
         return st
 
     def save(self, path: str) -> None:
@@ -185,7 +212,7 @@ class BranchRunner:
         self.workspace = workspace
         self.clock = clock
         self.max_iterations = max_iterations
-        self.state = BranchState.load(self._state_path)
+        self.state = BranchState.load(self._state_path, owner=env.branch_id)
         self._usage_mark = None
         self._claim_state(env)
 

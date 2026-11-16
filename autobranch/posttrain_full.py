@@ -164,6 +164,22 @@ class FullHyper:
     #: bound on how much work a preemption can destroy. At 2 the worst case is
     #: ~25 minutes instead of ~an hour, for 8% of the wall clock rather than 4%.
     save_every: int = 2
+    #: How many step-stamped copies of the export to retain beside it.
+    #:
+    #: `save_every` bounds what a preemption destroys; this bounds what
+    #: *training itself* destroys. Every export overwrites the last one, so the
+    #: volume only ever holds the newest policy -- and in RL the newest policy
+    #: is routinely not the best one. This run measured 0.750 at step 28,800
+    #: and 0.542 at 52,800, and by the time anyone compared the two the 28,800
+    #: weights had been overwritten four times over. The better number was
+    #: real, recorded, and permanently unreproducible: nothing to re-measure,
+    #: nothing to serve, nothing to ship.
+    #:
+    #: A full checkpoint is ~16 GiB, which is why the default is small rather
+    #: than zero. Volume bytes are the cheapest thing in this system; an hour
+    #: of H100 that produced a model we then deleted is the most expensive.
+    #: 0 disables retention and restores the overwrite-only behaviour.
+    keep_checkpoints: int = 3
     #: Where the HF export and a mirrored metrics log go. Empty means derive it
     #: from AUTOBRANCH_DATA_ROOT/RUN_ID/BRANCH_ID, which is what a real branch
     #: wants; a probe or a local test passes an explicit path.
@@ -360,7 +376,7 @@ def collect_group(env, policy: VisionActionPolicy, compiled, hyper: FullHyper,
     live = np.ones(lanes, dtype=bool)
     per_lane: list[list[Decision]] = [[] for _ in range(lanes)]
     totals = {"decisions": 0, "invalid": 0, "damage_dealt": 0.0, "damage_taken": 0.0,
-              "rounds_won": 0, "rounds_lost": 0}
+              "rounds_won": 0, "rounds_lost": 0, "lanes": lanes, "lanes_done": 0}
 
     for _ in range(hyper.max_decisions_per_match):
         if not live.any():
@@ -408,6 +424,15 @@ def collect_group(env, policy: VisionActionPolicy, compiled, hyper: FullHyper,
 
         obs = result.obs
         live &= ~result.done
+
+    # How many lanes reached a natural end rather than being cut off by the
+    # decision cap. Without this the cap is invisible: `shaping_only` only
+    # fires when *no* round resolves anywhere, so a collection where every
+    # single match is truncated but a few rounds happen to land reads as
+    # healthy. This run spent 11 iterations in exactly that state -- 4,800
+    # decisions every time, which is 8 lanes x 600 exactly, meaning not one
+    # match in 88 ever finished -- and the metrics said nothing.
+    totals["lanes_done"] = int((~live).sum())
 
     decisions: list[Decision] = []
     for lane in per_lane:
@@ -547,6 +572,61 @@ def save_hf_export(model, processor, directory: Path) -> Path:
     return directory
 
 
+def retain_checkpoint(export_dir: Path, step: int, keep: int) -> Path | None:
+    """Keep a step-stamped copy of the export, pruning the oldest.
+
+    Hard-links where the filesystem allows it, so retaining N checkpoints
+    costs N directory entries rather than N x 16 GiB; falls back to copying
+    when it does not (a FUSE-backed volume may refuse `link`). Either way the
+    copy is staged and renamed, so a half-written checkpoint never appears
+    under a name something else might load.
+
+    A directory holding a `keep.marker` is never pruned. That is how a
+    checkpoint someone has actually measured survives the retention window --
+    an evaluated step is evidence, and evidence outranks recency.
+    """
+    if keep <= 0 or step is None:
+        return None
+    import shutil
+
+    root = export_dir.parent / "checkpoints"
+    dest = root / f"step-{step}"
+    if dest.is_dir():
+        return dest
+
+    staging = root / f".staging-step-{step}-{os.getpid()}"
+    try:
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        for src in sorted(p for p in export_dir.iterdir() if p.is_file()):
+            target = staging / src.name
+            try:
+                os.link(src, target)
+            except OSError:
+                shutil.copy2(src, target)
+        os.replace(staging, dest)
+    except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
+        return None
+
+    # Prune by step, not mtime: a resumed run rewrites old steps' mtimes and
+    # would otherwise delete its newest weights first.
+    def step_of(p: Path) -> int:
+        try:
+            return int(p.name.split("-")[-1])
+        except ValueError:
+            return -1
+
+    existing = sorted(
+        (p for p in root.iterdir() if p.is_dir() and p.name.startswith("step-")),
+        key=step_of,
+    )
+    prunable = [p for p in existing if not (p / "keep.marker").is_file()]
+    for victim in prunable[: max(0, len(prunable) - keep)]:
+        shutil.rmtree(victim, ignore_errors=True)
+    return dest
+
+
 # ---------------------------------------------------------------------------
 # the trainer entry point
 # ---------------------------------------------------------------------------
@@ -664,7 +744,8 @@ def train(
             iteration = progress["iteration"] + 1
             decisions: list[Decision] = []
             totals = {"decisions": 0, "invalid": 0, "damage_dealt": 0.0,
-                      "damage_taken": 0.0, "rounds_won": 0, "rounds_lost": 0}
+                      "damage_taken": 0.0, "rounds_won": 0, "rounds_lost": 0,
+                      "lanes": 0, "lanes_done": 0}
             for g in range(max(1, hyp.groups_per_iteration)):
                 got, tot = collect_group(
                     environment, policy, compiled, hyp,
@@ -694,6 +775,23 @@ def train(
                     f"({hyp.max_decisions_per_match} per lane). round_won/round_lost "
                     f"contributed nothing, so this update is shaping-only. Raise "
                     f"max_decisions_per_match above one round's length.",
+                    flush=True,
+                )
+            elif totals["lanes"] and totals["lanes_done"] == 0:
+                # Every match hit the cap. Rounds still resolve, so the
+                # shaping-only warning above stays silent and the iteration
+                # looks fine -- but no match ever reaches an outcome, so the
+                # policy is trained on prefixes of matches and scored on whole
+                # ones. That gap is how a collection winning 73 of 76 rounds
+                # coexists with a 0.54 win rate at evaluation.
+                print(
+                    f"WARNING: iteration {iteration} truncated every one of "
+                    f"{totals['lanes']} matches at "
+                    f"{hyp.max_decisions_per_match} decisions; "
+                    f"{totals['rounds_won'] + totals['rounds_lost']} rounds "
+                    f"resolved ({(totals['rounds_won'] + totals['rounds_lost']) / totals['lanes']:.2f} "
+                    f"per match). Training sees match prefixes while the "
+                    f"objective scores complete matches.",
                     flush=True,
                 )
 
@@ -750,6 +848,18 @@ def train(
                 "shaping_only": bool(totals["rounds_won"] == 0
                                      and totals["rounds_lost"] == 0),
                 "rounds_lost": totals["rounds_lost"],
+                # What fraction of matches reached an outcome instead of being
+                # cut off by the decision cap, and how many rounds a match
+                # yielded. `shaping_only` is too blunt to show this: it needs
+                # *zero* rounds anywhere, so a collection where every match is
+                # truncated reads as healthy as long as a few rounds land.
+                # These two make the cap legible in the log an analysis reads.
+                "matches": totals["lanes"],
+                "matches_completed": totals["lanes_done"],
+                "match_completion_rate": (totals["lanes_done"]
+                                          / max(1, totals["lanes"])),
+                "rounds_per_match": ((totals["rounds_won"] + totals["rounds_lost"])
+                                     / max(1, totals["lanes"])),
                 "reward_fingerprint": fingerprint,
                 "wall_seconds": round(time.time() - started, 1),
                 **{k: v for k, v in stats.items()},
@@ -782,6 +892,8 @@ def train(
             # in a way that skipping it is not.
             if hyp.save_every and iteration % hyp.save_every == 0:
                 save_hf_export(model, processor, export_dir)
+                retain_checkpoint(export_dir, progress.get("step"),
+                                  hyp.keep_checkpoints)
                 try:
                     durable_state.write_text(json.dumps(progress))
                 except OSError:
@@ -799,6 +911,7 @@ def train(
     # export would measure a policy from several iterations ago. Progress
     # follows it, for the same reason it does inside the loop.
     save_hf_export(model, processor, export_dir)
+    retain_checkpoint(export_dir, progress.get("step"), hyp.keep_checkpoints)
     try:
         durable_state.write_text(json.dumps(progress))
     except OSError:

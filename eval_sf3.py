@@ -2,6 +2,12 @@
 
     modal run eval_sf3.py --run-id run-25ed75aa0a --matches 24
 
+Pass --export-dir to score a retained checkpoint instead of the live export,
+which is the only way to measure a policy training has already moved past:
+
+    modal run eval_sf3.py --run-id run-25ed75aa0a \
+        --export-dir checkpoints/step-52800 --matches 24
+
 The branch agent decides when to evaluate. That is the design -- the search
 owns its own budget -- but it means a run can spend its whole deadline training
 and produce no number, and an unmeasured policy is worth nothing. The
@@ -52,12 +58,13 @@ image = (
     cpu=8,
     memory=65536,
     volumes={"/data": data},
-    timeout=60 * 90,
+    timeout=60 * 150,
     secrets=[modal.Secret.from_name("autobranch-modal-auth")],
 )
 def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
              difficulty: int = 8, mode: str = "stochastic",
-             concurrency: int = 0, seeds: str = "") -> dict:
+             concurrency: int = 0, seeds: str = "",
+             export_dir: str = "hf") -> dict:
     import json
     import pathlib
     import sys
@@ -75,12 +82,28 @@ def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
     spec = EnvironmentSpec.parse(
         yaml.safe_load(pathlib.Path("/bundle/autobranch.yaml").read_text())
     )
-    export = pathlib.Path(f"/data/runs/{run_id}/{branch_id}/hf")
+    branch_root = pathlib.Path(f"/data/runs/{run_id}/{branch_id}")
+    export = branch_root / export_dir
     if not (export / "config.json").is_file():
         return {"ok": False, "reason": f"no HF export at {export}"}
 
+    # A retained checkpoint carries its step in its name (checkpoints/step-N),
+    # and SNAPSHOT.json confirms it when one is present.
+    scored_step = None
+    if export.name.startswith("step-"):
+        try:
+            scored_step = int(export.name.split("-")[-1])
+        except ValueError:
+            scored_step = None
+    snap = export / "SNAPSHOT.json"
+    if snap.is_file():
+        try:
+            scored_step = json.loads(snap.read_text()).get("step", scored_step)
+        except Exception:  # noqa: BLE001 - a bad marker must not block scoring
+            pass
+
     progress = {}
-    state = pathlib.Path(f"/data/runs/{run_id}/{branch_id}/progress.json")
+    state = branch_root / "progress.json"
     if state.is_file():
         progress = json.loads(state.read_text())
 
@@ -112,8 +135,20 @@ def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
         model, processor, vocab, device="cuda",
         temperature=1.0, action_names=action_names,
     )
+    # A bank of unrelated base seeds, not one. The evaluator offsets a single
+    # base seed by the batch index, so one seed makes every batch a near
+    # neighbour of the same emulator draw; a bank makes each batch an
+    # independent family. The n=24 scores this run searched on came from one
+    # family and did not replicate at larger n, which is the whole reason to
+    # widen the draw rather than just add matches to it.
+    bank = tuple(int(s) for s in str(seeds).split(",") if s.strip()) if seeds else (
+        12345, 4242, 777, 20260115, 31337, 8675309, 1618033, 2718281,
+    )
+
     policy.deterministic = (mode == "deterministic")
-    policy.reseed(12345)
+    # Seed the sampler from the first family, so the policy's randomness is
+    # pinned to the same draw the matches are taken from.
+    policy.reseed(bank[0])
 
     evaluator = import_target(spec.objective.evaluator, search_path="/bundle")
     budget = dict(spec.objective.budget)
@@ -129,15 +164,6 @@ def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
     budget.update({"matches": matches, "difficulty": difficulty,
                    "concurrency": max(1, lanes)})
 
-    # A bank of unrelated base seeds, not one. The evaluator offsets a single
-    # base seed by the batch index, so one seed makes every batch a near
-    # neighbour of the same emulator draw; a bank makes each batch an
-    # independent family. The n=24 scores this run searched on came from one
-    # family and did not replicate at larger n, which is the whole reason to
-    # widen the draw rather than just add matches to it.
-    bank = tuple(int(s) for s in str(seeds).split(",") if s.strip()) if seeds else (
-        12345, 4242, 777, 20260115, 31337, 8675309, 1618033, 2718281,
-    )
     t0 = time.time()
     raw = evaluator(policy, seeds=bank, budget=budget,
                     deterministic=policy.deterministic)
@@ -145,13 +171,25 @@ def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
         "ok": True,
         "run_id": run_id,
         "branch_id": branch_id,
-        "step": progress.get("step"),
-        "iteration": progress.get("iteration"),
+        # Attribute the score to the weights that produced it. progress.json
+        # tracks the LIVE export and races ahead of any retained checkpoint,
+        # so trusting it would file a step-28,800 measurement under whatever
+        # step training happened to reach while the match was running -- and a
+        # win rate pinned to the wrong weights is worse than no win rate.
+        # A step-stamped directory names its own step; only the live export
+        # has to ask progress.json.
+        "step": scored_step if scored_step is not None else progress.get("step"),
+        "iteration": None if scored_step is not None else progress.get("iteration"),
+        "export_dir": export_dir,
+        "export_is_live": export_dir == "hf",
+        "n": matches,
+        "difficulty": difficulty,
+        "concurrency": budget["concurrency"],
         "mode": mode,
         # Provenance, so the number is readable without reconstructing the
         # command that produced it. `matches` and `seed_bank` are the two
         # things that decide how much the number is worth.
-        "export_dir": str(export),
+        "export_path": str(export),
         "matches_requested": int(matches),
         "concurrency": int(budget["concurrency"]),
         "seed_bank": list(bank),
@@ -174,11 +212,11 @@ def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
 @app.local_entrypoint()
 def main(run_id: str, branch_id: str = "b0", matches: int = 24,
          difficulty: int = 8, mode: str = "stochastic", concurrency: int = 0,
-         seeds: str = ""):
+         seeds: str = "", export_dir: str = "hf"):
     import json
 
     print(json.dumps(
         evaluate.remote(run_id=run_id, branch_id=branch_id, matches=matches,
                         difficulty=difficulty, mode=mode, concurrency=concurrency,
-                        seeds=seeds),
+                        seeds=seeds, export_dir=export_dir),
         indent=2, default=str))

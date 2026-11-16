@@ -242,10 +242,15 @@ class Sf3Env:
     """`n_envs` concurrent matches, each a sandbox, behind the step contract."""
 
     def __init__(self, *, n_envs: int = 1, difficulty: int = DEFAULT_DIFFICULTY,
-                 seed: int = 0, recent: int = 8) -> None:
+                 seed: int = 0, recent: int = 8,
+                 lane_seeds: Sequence[int] | None = None) -> None:
         self.n_envs = int(n_envs)
         self.difficulty = int(difficulty)
         self.seed = int(seed)
+        #: Explicit per-lane seeds, when the caller wants lanes drawn from
+        #: more than one seed family. None keeps `seed + i`, which is what
+        #: training wants: one contiguous family per collection.
+        self.lane_seeds = None if lane_seeds is None else [int(s) for s in lane_seeds]
         self.recent_len = int(recent)
         self.action_names = ACTION_NAMES
         self.n_actions = N_ACTIONS
@@ -289,7 +294,9 @@ class Sf3Env:
         from concurrent.futures import ThreadPoolExecutor
 
         lanes = [
-            EmulatorLane(difficulty=self.difficulty, seed=self.seed + i,
+            EmulatorLane(difficulty=self.difficulty,
+                         seed=(self.lane_seeds[i] if self.lane_seeds
+                               else self.seed + i),
                          image=self._image, app=self._app)
             for i in range(self.n_envs)
         ]
@@ -415,6 +422,44 @@ def make_env(*, n_envs: int = 1, seed: int = 0, difficulty: int = DEFAULT_DIFFIC
 # ---------------------------------------------------------------------------
 
 
+def lane_seed_plan(n_matches: int, concurrency: int,
+                   bank: Sequence[int]) -> list[list[int]]:
+    """Per-lane seeds for each batch, spreading matches across the whole bank.
+
+    The bank exists because one seed rewards memorisation and makes a single
+    lucky draw look like skill. It was being wasted: the evaluator took one
+    base seed per *batch* (`bank[batch % len(bank)]`) and gave lane i
+    `base + i`, so a configuration whose concurrency equals its match count --
+    which is the SF3 default, 24 and 24 -- ran exactly one batch and therefore
+    used exactly one of the eight seeds. Every evaluation in the run that
+    produced this comment scored its policy on a single seed family, and two
+    such families disagreed by 33 points on identical weights (0.875 vs
+    0.542, n=24 each).
+
+    Spreading across lanes instead of across batches costs nothing: the eight
+    families are sampled inside one batch, so the diversity is free and the
+    wall clock is unchanged. Match m draws family `bank[m % len(bank)]` and
+    offsets within it by how many times that family has already been used, so
+    no two matches share a seed.
+    """
+    bank = [int(s) for s in bank] or [12345]
+    total = max(0, int(n_matches))
+    width = max(1, min(int(concurrency), total)) if total else 0
+
+    plan: list[list[int]] = []
+    assigned = 0
+    while assigned < total:
+        size = min(width, total - assigned)
+        batch = []
+        for k in range(size):
+            m = assigned + k
+            family = bank[m % len(bank)]
+            batch.append(family + m // len(bank))
+        plan.append(batch)
+        assigned += size
+    return plan
+
+
 def evaluate(
     policy,
     *,
@@ -450,14 +495,21 @@ def evaluate(
     failures: list[str] = []
 
     seed_bank = list(seeds) or [12345]
+    plan = lane_seed_plan(n_matches, concurrency, seed_bank)
+    seeds_used: set[int] = set()
     env = Sf3Env(n_envs=concurrency, difficulty=difficulty, seed=seed_bank[0])
     try:
         remaining = n_matches
         batch = 0
         while remaining > 0:
-            seed = seed_bank[batch % len(seed_bank)] + batch * 1009
+            lane_seeds = plan[batch]
+            # The policy's sampler is reseeded per batch, as before; the lanes
+            # now span the whole bank rather than one family of it.
+            seed = lane_seeds[0]
+            seeds_used.update(lane_seeds)
             env.close()
-            env = Sf3Env(n_envs=min(concurrency, remaining), difficulty=difficulty, seed=seed)
+            env = Sf3Env(n_envs=min(concurrency, remaining), difficulty=difficulty,
+                         seed=seed, lane_seeds=lane_seeds)
             obs, _ = env.reset()
             if hasattr(policy, "reseed"):
                 policy.reseed(seed)
@@ -510,6 +562,14 @@ def evaluate(
             "mode": "deterministic" if deterministic else "stochastic",
             "character": CHARACTER,
             "super_art": SUPER_ART,
+            # How much seed diversity is actually behind the number. The bank
+            # used to be silently reduced to one family whenever concurrency
+            # covered every match, and nothing in the output said so -- a
+            # single-seed measurement and an eight-seed one were
+            # indistinguishable downstream. Reporting both makes that visible
+            # at the point of use instead of two runs and 33 points later.
+            "distinct_seeds": len(seeds_used),
+            "seed_families": min(len(seed_bank), played) if played else 0,
             "failures": failures[:5],
         },
     }
