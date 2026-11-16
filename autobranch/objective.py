@@ -406,13 +406,22 @@ def evaluate(
     preferred = "deterministic" if deterministic else "stochastic"
     # If the manifest asked for only the other mode, report that rather than
     # raising: the caller asked for a cheaper evaluation, not a failed one.
-    chosen = modes.get(preferred) or next(iter(modes.values()))
+    #
+    # `measured_mode` is the mode the reported value actually came from, which
+    # is not always `preferred` -- exactly when this fallback fires, they
+    # differ. Recording the preference instead made the SF3 artifact claim its
+    # headline was measured deterministically, and reproduced a command with
+    # `--mode deterministic`, for a number the same record showed under
+    # `modes.stochastic` with `deterministic: false` in its budget. A
+    # provenance line that contradicts itself is worse than none.
+    measured_mode = preferred if preferred in modes else next(iter(modes))
+    chosen = modes[measured_mode]
     manifest_path = str(manifest) if manifest else _guess_manifest(search_path)
     command = _render_command(
         manifest=manifest_path,
         checkpoint=str(Path(checkpoint_path).resolve()),
         seed=seed,
-        mode="deterministic" if deterministic else "stochastic",
+        mode=measured_mode,
         budget=budget or {},
         search_path=None if search_path is None else str(Path(search_path).resolve()),
         bank_size=bank_size,
@@ -421,7 +430,8 @@ def evaluate(
         "objective": spec.objective.name,
         "direction": spec.objective.direction,
         "evaluator": spec.objective.evaluator,
-        "mode": "deterministic" if deterministic else "stochastic",
+        "mode": measured_mode,
+        "mode_requested": preferred,
         "modes": modes,
         # Only meaningful when both were measured.
         "mode_gap": (
