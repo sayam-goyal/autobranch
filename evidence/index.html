@@ -302,7 +302,15 @@
     <p>
       It is also not the whole picture. Uniform random over the same 40-macro
       vocabulary scores <span class="num">87.5%</span> and beats every trained
-      policy by a significant margin.
+      policy by a significant margin — including this framework's own finished
+      run at <span class="num">73.6%</span>
+      (<span class="num">p = 0.006</span>). Read that as a statement about the
+      metric before reading it as one about the policies: a win rate that
+      uniform macro-mashing maximises is not measuring what "good at Street
+      Fighter" would mean, and every comparison on this chart inherits that.
+      It is still the right objective for a reward search — it is outside the
+      agent's reach and it is the number the predecessor project published —
+      but it bounds what any of these rows can claim.
     </p>
     <figure>
       <div class="plot" id="p-sf"></div>
@@ -431,11 +439,32 @@
       measured and which are reconstructed.
     </p>
     <p class="note">
-      <strong>The live SF3 run has not finished.</strong> Its one score —
-      <span class="num">0.750</span> at <span class="num">n = 24</span>, interval
-      <span class="num">[0.551, 0.880]</span> — is 33 points wide and was measured
-      with Hinh's reward, not a searched one. It is the search's baseline, not its
-      product.
+      <strong>The SF3 run finished, and its searched rewards lost.</strong>
+      <code>run-25ed75aa0a</code> spent <span class="num">$90.84</span> over
+      <span class="num">5.6&nbsp;h</span> on four branches. Its best policy
+      scores <span class="num">0.736</span> at <span class="num">n = 72</span>,
+      interval <span class="num">[0.624, 0.824]</span> — measured with Hinh's
+      <em>unmodified</em> reward. Both mutations the agent tried scored worse
+      (<span class="num">0.667</span> for an added stun term,
+      <span class="num">0.625</span> for stronger damage shaping; combined
+      one-sided <span class="num">p = 0.016</span>). On this environment the
+      search confirmed the hand-tuned reward instead of improving on it, and
+      the gain over <code>r2_hinh</code> comes from the training setup, not
+      from a discovered reward.
+    </p>
+    <p class="note">
+      <strong>That run's own headline was inflated, by its own measurement
+      tooling.</strong> The same checkpoint scored
+      <span class="num">0.958</span> at <span class="num">n = 24</span> and
+      <span class="num">0.736</span> at <span class="num">n = 72</span>, and
+      the two disagree (<span class="num">z = 2.32</span>,
+      <span class="num">p = 0.020</span>) — the evaluator had pinned its
+      concurrency to its match count, which collapses every batch onto one
+      emulator seed, so the small sample was a favourable draw rather than a
+      noisier estimate. Every fork, abandonment and reward rejection in that
+      run was decided at that resolution. The number above is the corrected
+      one; the defect is fixed, and it is the strongest argument on this page
+      for measuring the objective independently and at honest&nbsp;n.
     </p>
     <p class="note">
       <strong>No head-to-head against a published model exists.</strong>
@@ -481,7 +510,7 @@
   const SF = [
     { label: "uniform random over 40 macros", v: 87.5, lo: 82.2, hi: 91.4, n: 200, kind: "ref"  },
     { label: "searched reward (r3_potential)", v: 77.0, lo: 70.7, hi: 82.3, n: 200, kind: "win"  },
-    { label: "autobranch · Qwen3-VL-8B, in progress", v: 75.0, lo: 55.1, hi: 88.0, n: 24, kind: "live" },
+    { label: "autobranch · Qwen3-VL-8B (finished)", v: 73.6, lo: 62.4, hi: 82.4, n: 72, kind: "live" },
     { label: "hand-tuned reward (r2_hinh)",    v: 55.0, lo: 45.2, hi: 64.4, n: 100, kind: "base" },
     { label: "untrained Qwen3-4B, sampled",    v: 45.9, lo: 39.2, hi: 52.7, n: 207, kind: "ref"  },
     { label: "any checkpoint at the argmax",   v:  0.0, lo:  0.0, hi:  3.7, n: 100, kind: "ref"  }
