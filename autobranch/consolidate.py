@@ -41,6 +41,13 @@ class Winner:
     checkpoint: str | None
     command: str = ""
     detail: dict[str, Any] = field(default_factory=dict)
+    # The training step that produced `score`. Needed because a full
+    # fine-tune's tensors live in a per-step directory on the Volume, and the
+    # branch's live `hf/` export is the *latest* step, not the best-scoring
+    # one. In run-25ed75aa0a those differed badly: the winner scored 0.736 at
+    # n=72 on step 72,000 and 0.375 on step 86,400, so an artifact pointing
+    # at `hf/` advertised one number and handed over weights worth half of it.
+    step: int | None = None
 
 
 def rank_branches(branches: list[dict[str, Any]], objective) -> list[dict[str, Any]]:
@@ -95,7 +102,53 @@ def select_winner(payload: dict[str, Any], objective) -> Winner:
         checkpoint=top.get("published_checkpoint") or top.get("checkpoint"),
         command=top.get("score_command", ""),
         detail=top.get("score_detail") or {},
+        step=_step_of_best(top),
     )
+
+
+def _independent_summary(payload: dict[str, Any], winner: Winner) -> list[dict[str, Any]]:
+    """Independent evaluations of the winning branch, largest n first.
+
+    Injected into the payload by whoever has the Volume mounted, so this
+    module stays free of I/O. Absent is normal and renders as absent -- the
+    artifact must not imply an independent check that nobody ran.
+    """
+    for b in payload.get("branches") or []:
+        if b.get("branch_id") != winner.branch_id:
+            continue
+        rows = []
+        for e in b.get("independent_evals") or []:
+            if not isinstance(e, dict):
+                continue
+            detail = e.get("detail") or {}
+            rows.append({
+                "step": e.get("step"),
+                "export_dir": e.get("export_dir"),
+                "n": e.get("n") or detail.get("matches"),
+                "win_rate": e.get("value", e.get("win_rate")),
+                "wins": detail.get("wins"),
+                "rounds_won": detail.get("rounds_won"),
+                "rounds_lost": detail.get("rounds_lost"),
+                "seed_bank": e.get("seed_bank"),
+                "mode": e.get("mode"),
+            })
+        rows.sort(key=lambda r: (r.get("n") or 0), reverse=True)
+        return rows
+    return []
+
+
+def _step_of_best(branch: dict[str, Any]) -> int | None:
+    """The step whose evaluation produced the branch's best score."""
+    best, best_score = None, None
+    for s in branch.get("scores") or []:
+        v = s.get("score")
+        if v is None:
+            continue
+        if best_score is None or float(v) > float(best_score):
+            best, best_score = s, float(v)
+    if best is None or best.get("step") is None:
+        return None
+    return int(best["step"])
 
 
 def _reward_for_best(branch: dict[str, Any]) -> dict[str, Any]:
@@ -194,11 +247,18 @@ def build_manifest(payload: dict[str, Any], winner: Winner) -> dict[str, Any]:
             "direction": objective.get("direction", "maximize"),
             "score": winner.score,
             "measured_by": winner.command or "(command not recorded)",
+            "measured_at_step": winner.step,
             "detail": winner.detail,
+            # The search's own score is measured at whatever n a branch could
+            # afford. Where a larger independent evaluation exists it belongs
+            # beside it, not buried: in run-25ed75aa0a the search read 0.9583
+            # at n=24 on a checkpoint an n=72 run put at 0.7361.
+            "independent": _independent_summary(payload, winner),
         },
         "winner": {
             "branch_id": winner.branch_id,
             "reward_config": winner.reward_config,
+            "step": winner.step,
             "checkpoint": os.path.basename(winner.checkpoint) if winner.checkpoint else None,
         },
         "policy": (spec.get("policy") or {}),
@@ -262,6 +322,36 @@ def artifact_readme(manifest: dict[str, Any]) -> str:
         "",
         f"Measured by: `{obj['measured_by']}`",
         "",
+    ]
+    independent = obj.get("independent") or []
+    if independent:
+        lines += [
+            "## Independent evaluation",
+            "",
+            "The score above is the search's own, measured at whatever match count",
+            "a branch could afford. These were measured separately, after the run,",
+            "at larger n. Where they disagree, **trust these**: a small evaluation",
+            "is not a noisier estimate of a large one, it is a narrower draw, and a",
+            "search that selects on it selects the optimistic end of its own noise.",
+            "",
+            "| step | n | win rate | wins | rounds W/L | mode |",
+            "|---:|---:|---:|---:|---:|---|",
+        ]
+        for r in independent:
+            wr = r.get("win_rate")
+            rounds = (
+                f"{r.get('rounds_won')}/{r.get('rounds_lost')}"
+                if r.get("rounds_won") is not None else "-"
+            )
+            lines.append(
+                f"| {r.get('step') if r.get('step') is not None else '-':,} "
+                f"| {r.get('n') or '-'} "
+                f"| {f'{float(wr):.4f}' if wr is not None else '-'} "
+                f"| {r.get('wins') if r.get('wins') is not None else '-'} "
+                f"| {rounds} | {r.get('mode') or '-'} |"
+            )
+        lines.append("")
+    lines += [
         "## What is here",
         "",
         "| file | what it is |",
@@ -307,6 +397,28 @@ def weights_note(payload: dict[str, Any], winner: Winner, ckpt_name: str | None)
         "",
     ]
     if trainer == "grpo_full":
+        # `hf/` is the branch's LATEST export, overwritten every save, so it
+        # is only the scored weights when the branch stopped improving at its
+        # final step. Name the best-scoring step's directory whenever the
+        # trajectory records one. run-25ed75aa0a is why: its winner measured
+        # 0.736 at n=72 on step 72,000 and 0.375 on step 86,400 -- the policy
+        # had collapsed into never losing a round and rarely winning one --
+        # and `hf/` held the latter while the artifact advertised the former.
+        if winner.step is not None:
+            export = f"runs/{run_id}/{branch}/checkpoints/step-{winner.step}/"
+            which = (
+                f"This is the export for **step {winner.step:,}**, the step whose "
+                f"evaluation produced the {winner.score:.4f} above. Do not substitute "
+                f"`runs/{run_id}/{branch}/hf/`: that is whatever step the branch "
+                f"wrote last, which is not generally the step that scored."
+            )
+        else:
+            export = f"runs/{run_id}/{branch}/hf/"
+            which = (
+                "The winning score recorded no step, so this is the branch's last "
+                "export rather than a step known to match the score above. Treat the "
+                "two as unverified against each other until you re-measure."
+            )
         lines += [
             f"`{ckpt_name or 'latest.pt'}` in this directory is the **record**, not the",
             "model. It carries the architecture, the action vocabulary, the prompt and",
@@ -316,13 +428,15 @@ def weights_note(payload: dict[str, Any], winner: Winner, ckpt_name: str | None)
             "the `autobranch-data` Volume:",
             "",
             "```",
-            f"runs/{run_id}/{branch}/hf/",
+            export,
             "```",
+            "",
+            which,
             "",
             "Fetch it with:",
             "",
             "```bash",
-            f"modal volume get autobranch-data runs/{run_id}/{branch}/hf ./hf",
+            f"modal volume get autobranch-data {export.rstrip('/')} ./hf",
             "```",
             "",
             "It is not copied in here because duplicating 16 GiB onto the same Volume",

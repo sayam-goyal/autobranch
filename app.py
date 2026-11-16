@@ -307,6 +307,27 @@ def finalize_run(run_id: str) -> dict:
     payload["spec"] = run.spec or {}
     payload["constraints"] = run.constraints
 
+    # Independent evaluations, if any were run. These are the only scores in
+    # the artifact the search did not produce, and they are the ones worth
+    # trusting: a branch evaluates at whatever n its budget allows, and in
+    # run-25ed75aa0a that was 24 -- which read 0.9583 on a checkpoint an
+    # n=72 evaluation put at 0.7361, a disagreement at p=0.020. Shipping the
+    # search's number alone advertises the optimistic end of its own noise.
+    import json as _json
+
+    for branch in payload.get("branches") or []:
+        path = os.path.join(
+            DEFAULT_DATA_ROOT, "runs", run_id, str(branch.get("branch_id")),
+            "independent_eval.json",
+        )
+        try:
+            with open(path) as fh:
+                runs = _json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(runs, list) and runs:
+            branch["independent_evals"] = runs
+
     try:
         spec = EnvironmentSpec.parse(run.spec) if run.spec else None
         objective = spec.objective if spec else _FallbackObjective(run.objective)
