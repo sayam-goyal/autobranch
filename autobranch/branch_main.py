@@ -47,6 +47,32 @@ DEFAULT_TRAIN_STEPS = 20_000
 MAX_ITERATIONS = 40
 
 
+def _digest_for_best(b: dict[str, Any]) -> str:
+    """Describe the reward that produced a sibling's *best* score.
+
+    A branch's live `reward_config` is the next thing it intends to try, so
+    pairing it with an already-measured `best_score` asserts a causal link
+    that does not exist. The search agent reads these pairs and reasons from
+    them -- in the SF3 run it concluded "raising damage_dealt to 0.15 scored
+    0.8333" about a score measured one minute *before* that weight was set,
+    and then chose its next move on that basis. Attribute to the reward
+    recorded on the winning score, and say so plainly when none was recorded
+    rather than substituting the current one.
+    """
+    scores = b.get("scores") or []
+    best = None
+    for s in scores:
+        if not isinstance(s, dict) or not isinstance(s.get("score"), (int, float)):
+            continue
+        if best is None or float(s["score"]) > float(best["score"]):
+            best = s
+    if best is not None and best.get("reward"):
+        return summarize(best["reward"])
+    if best is not None:
+        return "(reward at measurement not recorded)"
+    return summarize(b.get("reward_config") or {}) + " (not yet measured)"
+
+
 @dataclass
 class BranchState:
     """Everything this branch knows about itself, rebuilt on resume.
@@ -62,6 +88,16 @@ class BranchState:
     scores: list[float] = field(default_factory=list)
     steps_done: int = 0
     checkpoint: str | None = None
+    # Where the *durable* copy of this branch's best-scoring weights lives.
+    #
+    # Kept apart from `checkpoint` because that field answers a different
+    # question -- "where did the trainer last write?" -- and every train()
+    # call overwrites it with a sandbox-local path. A branch that trained
+    # past its best score therefore ended with a `/workspace` path that dies
+    # with the sandbox, and consolidation, reading it, reported the winning
+    # weights unreachable while a perfectly good copy sat on the Volume.
+    # Only `_publish_weights` writes this, so it always names a real file.
+    published_checkpoint: str | None = None
     spend_usd: float = 0.0
     tokens: int = 0
     evals_without_improvement: int = 0
@@ -82,6 +118,7 @@ class BranchState:
             "scores": self.scores,
             "steps_done": self.steps_done,
             "checkpoint": self.checkpoint,
+            "published_checkpoint": self.published_checkpoint,
             "spend_usd": self.spend_usd,
             "tokens": self.tokens,
             "evals_without_improvement": self.evals_without_improvement,
@@ -231,6 +268,7 @@ class BranchRunner:
             "spend_usd": self.state.spend_usd,
             "tokens": self.state.tokens,
             "checkpoint": self.state.checkpoint,
+            "published_checkpoint": self.state.published_checkpoint,
             **fields,
         }
         try:
@@ -428,7 +466,7 @@ class BranchRunner:
                     status=b.get("status") or "unknown",
                     best_objective=b.get("best_score"),
                     note=b.get("abandoned_reason") or "",
-                    reward_digest=summarize(b.get("reward_config") or {}),
+                    reward_digest=_digest_for_best(b),
                 ))
             except TypeError:
                 siblings.append(b)
@@ -584,17 +622,30 @@ class BranchRunner:
             if published:
                 # Point the registry at the durable copy, which is what
                 # consolidation will read long after this sandbox is gone.
+                # Recorded on its own field too: `checkpoint` is overwritten
+                # by the next train() call, so it cannot be the thing that
+                # outlives the sandbox.
                 self.state.checkpoint = published
+                self.state.published_checkpoint = published
                 self._event(f"weights published for score {value:.4f}")
         else:
             self.state.evals_without_improvement += 1
 
         try:
             self.registry.append_score(
-                self.env.run_id, self.env.branch_id, step=self.state.steps_done, score=value
+                self.env.run_id,
+                self.env.branch_id,
+                step=self.state.steps_done,
+                score=value,
+                reward=self.state.reward_config or {},
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Still non-fatal -- a registry hiccup must not destroy a branch
+            # that has already done the work. But it must not be silent
+            # either: a bare `pass` here hid an `append_score` signature
+            # mismatch, and the only visible symptom was an empty score
+            # trajectory on a branch that had plainly evaluated.
+            self._event(f"WARNING: score {value:.4f} not recorded in registry: {exc}")
         self._persist(score_command=command, score_detail=detail)
         self._event(
             f"objective {self.spec.objective.name} = {value:.4f} at step {self.state.steps_done}"

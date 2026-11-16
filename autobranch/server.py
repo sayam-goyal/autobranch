@@ -647,7 +647,7 @@ def _seeded_runs(enabled: bool = True) -> dict[str, Any]:
     if not enabled:
         return {}
     out: dict[str, Any] = {}
-    for name in ("seed_runs", "seed_runs_tetris"):
+    for name in ("seed_runs", "seed_runs_tetris", "seed_runs_sf3_lora"):
         try:
             import importlib
 

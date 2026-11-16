@@ -194,6 +194,52 @@ def test_unreachable_checkpoint_raises_rather_than_shipping_nothing(objective, t
         consolidate(payload, objective, out_dir=str(tmp_path))
 
 
+def test_ships_the_published_copy_when_training_moved_past_the_best_score(objective, tmp_path):
+    """Regression, SF3 run-25ed75aa0a / b0.1.1.1.
+
+    The winner published its best weights at step 72,000, trained on to
+    86,400 -- which reset `checkpoint` to a sandbox-local path -- then scored
+    equal, not better, so no second publish fired. The branch finished with
+    `checkpoint` naming a file inside a sandbox that no longer existed, and
+    consolidation refused to ship a run whose weights were sitting safely on
+    the Volume the whole time.
+    """
+    durable = tmp_path / "latest.pt"
+    durable.write_bytes(b"the-weights-that-scored")
+    payload = {
+        "run_id": "r", "env_name": "e", "objective": {"name": "o", "direction": "maximize"},
+        "spec": {}, "branches": [
+            {"branch_id": "b0.1.1.1", "reward_config": {},
+             "checkpoint": "/workspace/checkpoints/latest.pt",   # dead with the sandbox
+             "published_checkpoint": str(durable),               # survives on the Volume
+             "scores": [{"step": 72000, "score": 0.9583}, {"step": 86400, "score": 0.9583}]},
+        ],
+    }
+    winner = select_winner(payload, objective)
+    assert winner.checkpoint == str(durable)
+    consolidate(payload, objective, out_dir=str(tmp_path / "out"))
+    assert (tmp_path / "out" / "weights" / "latest.pt").read_bytes() == b"the-weights-that-scored"
+
+
+def test_winner_reward_is_the_one_that_produced_the_score(objective, tmp_path):
+    """A branch's `reward_config` is its *next* intent, so shipping it as the
+    provenance of an earlier score mislabels the artifact."""
+    ckpt = tmp_path / "w.pt"
+    ckpt.write_bytes(b"x")
+    measured = {"weights": {"round_won": 1.0, "damage_dealt": 0.1}}
+    payload = {
+        "run_id": "r", "env_name": "e", "objective": {"name": "o", "direction": "maximize"},
+        "spec": {}, "branches": [
+            {"branch_id": "b0", "checkpoint": str(ckpt),
+             "reward_config": {"weights": {"round_won": 1.0, "damage_dealt": 0.15}},
+             "scores": [{"step": 100, "score": 0.9, "reward": measured},
+                        {"step": 200, "score": 0.6,
+                         "reward": {"weights": {"damage_dealt": 0.15}}}]},
+        ],
+    }
+    assert select_winner(payload, objective).reward_config == measured
+
+
 def test_serve_snippet_resolves_the_checkpoint_from_the_manifest(payload, objective, tmp_path):
     """The docstring may name the file for the reader, but the code must not
     hardcode it -- otherwise a re-consolidation with a different winner ships
@@ -266,3 +312,101 @@ class _Obj:
 
     def better(self, a, b):
         return a > b
+
+
+def test_a_full_finetune_artifact_names_the_step_that_scored(objective, tmp_path):
+    """Regression, SF3 run-25ed75aa0a / b0.1.1.1.
+
+    `hf/` is overwritten on every save, so it holds the branch's last step,
+    not its best. That winner measured 0.736 at n=72 on step 72,000 and 0.375
+    on step 86,400 -- it had collapsed into never losing a round and rarely
+    winning one -- and the artifact pointed at `hf/` while advertising the
+    earlier number. Anyone following the README would have loaded weights
+    worth half the score on the same page.
+    """
+    ckpt = tmp_path / "latest.pt"
+    ckpt.write_bytes(b"record")
+    payload = {
+        "run_id": "run-x", "env_name": "e",
+        "objective": {"name": "o", "direction": "maximize"},
+        "spec": {"trainer": "grpo_full"},
+        "branches": [
+            {"branch_id": "b0.1.1.1", "reward_config": {}, "checkpoint": str(ckpt),
+             "scores": [{"step": 72000, "score": 0.9583},
+                        {"step": 86400, "score": 0.9100}]},
+        ],
+    }
+    winner = select_winner(payload, objective)
+    assert winner.step == 72000
+
+    note = weights_note(payload, winner, "latest.pt")
+    assert "runs/run-x/b0.1.1.1/checkpoints/step-72000/" in note
+    assert "step 72,000" in note
+    # and it warns against the trap rather than staying silent about it
+    assert "Do not substitute" in note
+    assert "hf/" in note  # named, but as the thing NOT to use
+
+
+def test_the_weights_note_is_explicit_when_no_step_was_recorded(objective, tmp_path):
+    """Falling back to `hf/` is acceptable; doing it silently is not."""
+    ckpt = tmp_path / "latest.pt"
+    ckpt.write_bytes(b"record")
+    payload = {
+        "run_id": "run-y", "env_name": "e",
+        "objective": {"name": "o", "direction": "maximize"},
+        "spec": {"trainer": "grpo_full"},
+        "branches": [
+            {"branch_id": "b0", "reward_config": {}, "checkpoint": str(ckpt),
+             "scores": [{"score": 0.5}]},
+        ],
+    }
+    winner = select_winner(payload, objective)
+    assert winner.step is None
+    note = weights_note(payload, winner, "latest.pt")
+    assert "runs/run-y/b0/hf/" in note
+    assert "recorded no step" in note
+
+
+def test_independent_evaluations_are_shipped_beside_the_searchs_own_score(objective, tmp_path):
+    """The search evaluates at whatever n its budget allows. In SF3 that was
+    24, which read 0.9583 on a checkpoint an n=72 run put at 0.7361 -- a
+    disagreement at p=0.020. An artifact that ships only the search's number
+    advertises the optimistic end of its own noise, so a larger independent
+    measurement goes in the manifest and the README, largest n first.
+    """
+    ckpt = tmp_path / "latest.pt"
+    ckpt.write_bytes(b"record")
+    payload = {
+        "run_id": "run-z", "env_name": "sf3-ryu",
+        "objective": {"name": "win_rate_vs_cpu8", "direction": "maximize"},
+        "spec": {"trainer": "grpo_full"},
+        "branches": [
+            {"branch_id": "b0", "reward_config": {}, "checkpoint": str(ckpt),
+             "scores": [{"step": 72000, "score": 0.9583}],
+             "independent_evals": [
+                 {"step": 72000, "n": 72, "value": 0.7361, "mode": "stochastic",
+                  "detail": {"wins": 53, "rounds_won": 53, "rounds_lost": 3}},
+                 {"step": 86400, "n": 24, "value": 0.5, "mode": "stochastic",
+                  "detail": {"wins": 12, "rounds_won": 12, "rounds_lost": 0}},
+             ]},
+        ],
+    }
+    out = tmp_path / "art"
+    consolidate(payload, objective, out_dir=str(out))
+    m = json.loads((out / "manifest.json").read_text())
+    rows = m["objective"]["independent"]
+    assert [r["n"] for r in rows] == [72, 24], "largest n must come first"
+    assert rows[0]["win_rate"] == pytest.approx(0.7361)
+
+    text = (out / "README.md").read_text()
+    assert "Independent evaluation" in text
+    assert "0.7361" in text
+    assert "trust these" in text
+
+
+def test_an_artifact_without_independent_evals_claims_none(payload, objective, tmp_path):
+    """Absent must render as absent, never as an unrun check."""
+    consolidate(payload, objective, out_dir=str(tmp_path))
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert m["objective"]["independent"] == []
+    assert "Independent evaluation" not in (tmp_path / "README.md").read_text()

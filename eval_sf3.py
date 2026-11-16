@@ -56,7 +56,8 @@ image = (
     secrets=[modal.Secret.from_name("autobranch-modal-auth")],
 )
 def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
-             difficulty: int = 8, mode: str = "stochastic") -> dict:
+             difficulty: int = 8, mode: str = "stochastic",
+             concurrency: int = 0, seeds: str = "") -> dict:
     import json
     import pathlib
     import sys
@@ -116,11 +117,29 @@ def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
 
     evaluator = import_target(spec.objective.evaluator, search_path="/bundle")
     budget = dict(spec.objective.budget)
+    # Concurrency is not just a throughput knob: the evaluator runs one batch
+    # per `concurrency` matches and derives that batch's seed from the batch
+    # index, so concurrency == matches collapses the whole sample onto a
+    # single seed. Raising `matches` with it pinned would then buy more
+    # matches from one emulator draw rather than a wider sample, and
+    # re-running would reproduce the same matches instead of adding
+    # independent ones. Default to the 24 lanes this hardware is known to
+    # sustain and let the batch loop vary the seed.
+    lanes = int(concurrency) if concurrency else min(24, matches)
     budget.update({"matches": matches, "difficulty": difficulty,
-                   "concurrency": matches})
+                   "concurrency": max(1, lanes)})
 
+    # A bank of unrelated base seeds, not one. The evaluator offsets a single
+    # base seed by the batch index, so one seed makes every batch a near
+    # neighbour of the same emulator draw; a bank makes each batch an
+    # independent family. The n=24 scores this run searched on came from one
+    # family and did not replicate at larger n, which is the whole reason to
+    # widen the draw rather than just add matches to it.
+    bank = tuple(int(s) for s in str(seeds).split(",") if s.strip()) if seeds else (
+        12345, 4242, 777, 20260115, 31337, 8675309, 1618033, 2718281,
+    )
     t0 = time.time()
-    raw = evaluator(policy, seeds=(12345,), budget=budget,
+    raw = evaluator(policy, seeds=bank, budget=budget,
                     deterministic=policy.deterministic)
     out = {
         "ok": True,
@@ -129,6 +148,13 @@ def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
         "step": progress.get("step"),
         "iteration": progress.get("iteration"),
         "mode": mode,
+        # Provenance, so the number is readable without reconstructing the
+        # command that produced it. `matches` and `seed_bank` are the two
+        # things that decide how much the number is worth.
+        "export_dir": str(export),
+        "matches_requested": int(matches),
+        "concurrency": int(budget["concurrency"]),
+        "seed_bank": list(bank),
         "wall_s": round(time.time() - t0, 1),
         **(raw if isinstance(raw, dict) else {"value": float(raw)}),
     }
@@ -147,10 +173,12 @@ def evaluate(run_id: str, branch_id: str = "b0", matches: int = 24,
 
 @app.local_entrypoint()
 def main(run_id: str, branch_id: str = "b0", matches: int = 24,
-         difficulty: int = 8, mode: str = "stochastic"):
+         difficulty: int = 8, mode: str = "stochastic", concurrency: int = 0,
+         seeds: str = ""):
     import json
 
     print(json.dumps(
         evaluate.remote(run_id=run_id, branch_id=branch_id, matches=matches,
-                        difficulty=difficulty, mode=mode),
+                        difficulty=difficulty, mode=mode, concurrency=concurrency,
+                        seeds=seeds),
         indent=2, default=str))

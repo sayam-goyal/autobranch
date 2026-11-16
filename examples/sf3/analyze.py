@@ -54,11 +54,71 @@ def _weights(branch) -> dict:
     return dict((getattr(branch, "reward_config", {}) or {}).get("weights") or {})
 
 
-def _is_hinh(branch) -> bool:
-    w = _weights(branch)
+def _is_hinh_weights(w: dict) -> bool:
     if set(w) != set(HINH_REWARD):
         return False
     return all(abs(float(w[k]) - v) < 1e-9 for k, v in HINH_REWARD.items())
+
+
+def _is_hinh(branch) -> bool:
+    """Whether a branch's *current* reward is Hinh's. See `_observations`.
+
+    Kept only for the "ran it but has not scored it yet" message, which is
+    genuinely about the live configuration. Never use it to label a score.
+    """
+    return _is_hinh_weights(_weights(branch))
+
+
+def _n_of(detail: dict, fallback: int = 0) -> int:
+    """Match count behind one evaluation.
+
+    The objective reports per-mode, so `n` sits under
+    `detail["modes"][<mode>]`, not at the top level. Reading the top level
+    yielded 0 everywhere, which silenced every standard error in the report
+    and turned the central comparison into "pooled SE nan".
+    """
+    detail = detail or {}
+    direct = detail.get("n") or detail.get("matches")
+    if direct:
+        return int(direct)
+    best = 0
+    for mode in (detail.get("modes") or {}).values():
+        if isinstance(mode, dict):
+            best = max(best, int(mode.get("n") or mode.get("matches") or 0))
+    return best or int(fallback or 0)
+
+
+def _observations(branches, default_n: int = 0) -> list[dict]:
+    """One row per *evaluation*, each labelled with the reward that produced it.
+
+    This has to be per-score, not per-branch. A branch's `reward_config` is
+    the next reward it intends to try, so labelling its earlier scores with
+    it asserts a causal link that does not exist -- and in run-25ed75aa0a it
+    produced exactly the wrong headline: `b0`'s 0.9167, measured on the
+    reference reward, was reported as the best *searched* result because the
+    branch had since moved to an `opp_stun_gain` variant it had not yet
+    evaluated. A score whose reward was never recorded is marked unknown and
+    excluded from the comparison rather than guessed at.
+    """
+    out = []
+    for b in branches:
+        bid = str(getattr(b, "branch_id", "?"))
+        n_latest = _n_of(getattr(b, "score_detail", {}) or {}, default_n)
+        for s in getattr(b, "scores", []) or []:
+            if s.get("score") is None:
+                continue
+            reward = s.get("reward")
+            w = dict((reward or {}).get("weights") or {})
+            out.append({
+                "branch_id": bid,
+                "step": int(s.get("step") or 0),
+                "score": float(s["score"]),
+                "n": n_latest,
+                "weights": w,
+                "known": bool(reward),
+                "is_hinh": _is_hinh_weights(w) if reward else False,
+            })
+    return out
 
 
 def _fmt_reward(config: dict) -> str:
@@ -109,9 +169,23 @@ def report(run_id: str) -> str:
         return f"# {run_id}\n\nNo such run in the registry.\n"
 
     best = getattr(run, "best_score", None)
+    # `run.objective` is the manifest dict, not an object with `.name`;
+    # getattr for a name that is not there rendered "objective = None" as the
+    # report's headline.
+    obj = getattr(run, "objective", None)
+    if isinstance(obj, dict):
+        obj_name = obj.get("name") or "objective"
+    else:
+        obj_name = getattr(obj, "name", None) or "objective"
+    if best is None:
+        best = max(
+            (float(s.get("score")) for b in branches
+             for s in (getattr(b, "scores", []) or []) if s.get("score") is not None),
+            default=None,
+        )
     add(f"# SF3 reward search — {run_id}")
     add("")
-    add(f"**{getattr(run, 'objective_name', 'objective')} "
+    add(f"**{obj_name} "
         f"= {best if best is None else round(best, 4)}** "
         f"({getattr(run, 'state', '?')}), "
         f"{len(branches)} branches, "
@@ -126,33 +200,55 @@ def report(run_id: str) -> str:
     # ---- the table that answers the question --------------------------
     add("## Branches, by objective")
     add("")
-    add("| branch | parent | status | best | n | ±1 SE | steps | $ | reward |")
+    default_n = int(((getattr(run, "objective", {}) or {}).get("budget") or {}).get("matches") or 0)
+    obs = _observations(branches, default_n)
+    by_branch: dict[str, list[dict]] = {}
+    for o in obs:
+        by_branch.setdefault(o["branch_id"], []).append(o)
+
+    # Every evaluation gets a row. A per-branch table has to pick one score
+    # and one reward, and when a branch changed reward mid-life -- which is
+    # the normal case here -- any such pick misattributes.
+    add("| branch | parent | status | step | score | n | ±1 SE | $ | reward that produced it |")
     add("|---|---|---|---:|---:|---:|---:|---:|---|")
-    scored = []
     for b in sorted(branches, key=lambda x: str(getattr(x, "branch_id", ""))):
         bid = str(getattr(b, "branch_id", "?"))
-        score = getattr(b, "best_score", None)
-        detail = getattr(b, "score_detail", {}) or {}
-        n = int(detail.get("n") or detail.get("matches") or 0)
-        se = _se(float(score), n) if (score is not None and n) else float("nan")
-        tag = " **(Hinh)**" if _is_hinh(b) else ""
-        add(f"| `{bid}`{tag} | {getattr(b, 'parent_id', None) or '—'} "
-            f"| {getattr(b, 'status', '?')} "
-            f"| {'—' if score is None else f'{score:.4f}'} "
-            f"| {n or '—'} "
-            f"| {'—' if se != se else f'{se:.3f}'} "
-            f"| {getattr(b, 'steps_done', 0):,} "
-            f"| {getattr(b, 'spend_usd', 0.0):.2f} "
-            f"| `{_fmt_reward(getattr(b, 'reward_config', {}) or {})}` |")
-        if score is not None:
-            scored.append((bid, float(score), n, _is_hinh(b)))
+        rows = sorted(by_branch.get(bid, []), key=lambda o: o["step"])
+        if not rows:
+            add(f"| `{bid}` | {getattr(b, 'parent_id', None) or '—'} "
+                f"| {getattr(b, 'status', '?')} | — | — | — | — "
+                f"| {getattr(b, 'spend_usd', 0.0):.2f} | never evaluated |")
+            continue
+        for i, o in enumerate(rows):
+            se = _se(o["score"], o["n"])
+            if not o["known"]:
+                label = "unrecorded — excluded from the comparison"
+            else:
+                label = f"`{_fmt_reward({'weights': o['weights']})}`"
+                if o["is_hinh"]:
+                    label += " **(Hinh)**"
+            add(f"| {'`'+bid+'`' if i == 0 else ''} "
+                f"| {(getattr(b, 'parent_id', None) or '—') if i == 0 else ''} "
+                f"| {getattr(b, 'status', '?') if i == 0 else ''} "
+                f"| {o['step']:,} | {o['score']:.4f} | {o['n'] or '—'} "
+                f"| {'—' if se != se else f'{se:.3f}'} "
+                f"| {f'{getattr(b, 'spend_usd', 0.0):.2f}' if i == 0 else ''} "
+                f"| {label} |")
     add("")
+    unknown = [o for o in obs if not o["known"]]
+    if unknown:
+        add(f"{len(unknown)} of {len(obs)} evaluations predate per-score reward "
+            f"recording, so the reward that produced them is not known from the "
+            f"registry. They are excluded from the comparison below.")
+        add("")
 
     # ---- the comparison ------------------------------------------------
     add("## Searched reward vs the hand-tuned one")
     add("")
-    hinh = [s for s in scored if s[3]]
-    others = [s for s in scored if not s[3]]
+    hinh = [(o["branch_id"], o["score"], o["n"], True)
+            for o in obs if o["known"] and o["is_hinh"]]
+    others = [(o["branch_id"], o["score"], o["n"], False)
+              for o in obs if o["known"] and not o["is_hinh"]]
     # "Never ran it" and "ran it but has not scored it yet" are different
     # states and the report must not blur them: the first says the comparison
     # is impossible, the second says it is pending. The table above tags the

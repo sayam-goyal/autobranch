@@ -1,0 +1,977 @@
+<title>autobranch — what the measurements say</title>
+<style>
+  /* ── tokens ─────────────────────────────────────────────────────────────
+     Light is the base set. Dark redefines only tokens, under both the media
+     query (OS setting, un-stamped document) and the [data-theme] stamp, so a
+     viewer's explicit choice wins in either direction. No component below
+     reads a raw hex. */
+  :root {
+    color-scheme: light;
+
+    --ground:        #f7f8fa;   /* cool-biased neutral, toward the blue accent */
+    --surface:       #fcfcfb;   /* the chart surface the palette was validated on */
+    --surface-sunk:  #eef1f5;
+    --line:          #dde2ea;
+    --line-strong:   #c3cbd8;
+
+    --ink:           #0d1117;
+    --ink-2:         #4a5365;
+    --ink-3:         #6b7486;
+
+    /* validated categorical slots 1–3, light steps */
+    --s1: #2a78d6;   /* blue    */
+    --s2: #eb6834;   /* orange  */
+    --s3: #1baf7a;   /* aqua    */
+    --muted-series: #b3bccb;
+
+    --good:     #0ca30c;
+    --critical: #d03b3b;
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --ground:        #0e1014;
+      --surface:       #1a1a19;
+      --surface-sunk:  #15181d;
+      --line:          #2a2f38;
+      --line-strong:   #3d4350;
+      --ink:           #e9edf3;
+      --ink-2:         #a7b0c0;
+      --ink-3:         #79828f;
+      --s1: #3987e5;
+      --s2: #d95926;
+      --s3: #199e70;
+      --muted-series: #4a515e;
+      --good:     #0ca30c;
+      --critical: #d03b3b;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:        #0e1014;
+    --surface:       #1a1a19;
+    --surface-sunk:  #15181d;
+    --line:          #2a2f38;
+    --line-strong:   #3d4350;
+    --ink:           #e9edf3;
+    --ink-2:         #a7b0c0;
+    --ink-3:         #79828f;
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+    --muted-series: #4a515e;
+    --good:     #0ca30c;
+    --critical: #d03b3b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 56px 24px 96px; }
+
+  /* ── type ─────────────────────────────────────────────────────────────── */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 0 0 10px;
+  }
+  h1 {
+    font-size: clamp(30px, 4.4vw, 44px);
+    line-height: 1.12;
+    letter-spacing: -0.022em;
+    font-weight: 620;
+    text-wrap: balance;
+    margin: 0 0 16px;
+  }
+  h2 {
+    font-size: 23px;
+    line-height: 1.25;
+    letter-spacing: -0.014em;
+    font-weight: 600;
+    text-wrap: balance;
+    margin: 0 0 8px;
+  }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 66ch; }
+  .note { font-size: 14.5px; color: var(--ink-2); }
+  strong { font-weight: 640; color: var(--ink); }
+  code, .num {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.92em;
+  }
+  a { color: var(--s1); }
+
+  /* ── stat row ─────────────────────────────────────────────────────────── */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 2px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 28px 0 8px;
+  }
+  .stat { background: var(--surface); padding: 16px 18px; }
+  .stat-k {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink-3); margin-bottom: 6px;
+  }
+  .stat-v {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 25px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1;
+  }
+  .stat-sub { font-size: 12.5px; color: var(--ink-3); margin-top: 3px; }
+
+  /* ── finding blocks ───────────────────────────────────────────────────── */
+  .finding { margin: 52px 0 0; padding-top: 34px; border-top: 1px solid var(--line); }
+  .finding:first-of-type { border-top: none; }
+
+  figure { margin: 20px 0 0; }
+  .plot {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 16px 10px;
+    overflow-x: auto;
+  }
+  svg { display: block; max-width: 100%; height: auto; }
+  figcaption { font-size: 13.5px; color: var(--ink-3); margin-top: 10px; max-width: 68ch; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+    margin: 12px 2px 0;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-2);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
+  .swatch.line-mark { height: 3px; border-radius: 2px; width: 16px; }
+
+  /* counter-evidence callout — the thing a deck usually omits */
+  .caveat {
+    margin: 16px 0 0;
+    padding: 13px 15px;
+    background: var(--surface-sunk);
+    border-left: 2px solid var(--line-strong);
+    border-radius: 0 7px 7px 0;
+    font-size: 14.5px;
+    color: var(--ink-2);
+  }
+  .caveat b { color: var(--ink); font-weight: 620; }
+
+  details { margin-top: 12px; }
+  summary {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.06em;
+    color: var(--ink-3); cursor: pointer; padding: 4px 0;
+  }
+  summary:focus-visible { outline: 2px solid var(--s1); outline-offset: 3px; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 13px; }
+  th, td {
+    text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--line);
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+  }
+  th { color: var(--ink-3); font-weight: 500; font-size: 11px;
+       letter-spacing: 0.07em; text-transform: uppercase; }
+  td:first-child, th:first-child { text-align: left; }
+
+  /* ── tooltip ──────────────────────────────────────────────────────────── */
+  .tip {
+    position: fixed; z-index: 20; pointer-events: none; opacity: 0;
+    transition: opacity .09s ease;
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--line-strong); border-radius: 7px;
+    padding: 8px 10px; font-family: var(--mono); font-size: 12px;
+    font-variant-numeric: tabular-nums; line-height: 1.5;
+    box-shadow: 0 6px 22px rgb(0 0 0 / .14);
+    max-width: 260px;
+  }
+  .tip.on { opacity: 1; }
+  .tip-t { color: var(--ink-3); font-size: 10.5px; letter-spacing: .08em;
+           text-transform: uppercase; margin-bottom: 3px; }
+
+  .axis text { font-family: var(--mono); font-size: 11px; fill: var(--ink-3); }
+  .axis-title { font-family: var(--mono); font-size: 11px; fill: var(--ink-3);
+                letter-spacing: .06em; }
+  .grid line { stroke: var(--line); stroke-width: 1; }
+  .dlabel { font-family: var(--mono); font-size: 11.5px; font-weight: 600; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 36px 16px 72px; }
+    .stat-v { font-size: 21px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">autobranch · evidence</p>
+  <h1>Does searching the reward function actually beat tuning it by hand?</h1>
+  <p class="lede">
+    Five charts from four real runs. Every number is a measurement from an
+    independent evaluator that imports no reward code — including the run where
+    the search found nothing, and the run where random play beat everything we
+    trained.
+  </p>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-k">Rocket League</div>
+      <div class="stat-v">0.922</div>
+      <div class="stat-sub">vs 0.355 sparse-only · +57 pts</div>
+    </div>
+    <div class="stat">
+      <div class="stat-k">Street Fighter III</div>
+      <div class="stat-v">+22 pts</div>
+      <div class="stat-sub">searched reward over hand-tuned</div>
+    </div>
+    <div class="stat">
+      <div class="stat-k">Tetris</div>
+      <div class="stat-v">0.000</div>
+      <div class="stat-sub">6 reward configs · the axis was a null</div>
+    </div>
+    <div class="stat">
+      <div class="stat-k">Cost of that null</div>
+      <div class="stat-v">$4.51</div>
+      <div class="stat-sub">to rule out an entire axis</div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:10px">
+    The third and fourth tiles are the point of showing this at all: a framework
+    that only reports the runs it won is advertising, not evidence.
+  </p>
+
+  <!-- ─────────────────────────────────────────────────────────────────── -->
+  <section class="finding">
+    <p class="eyebrow">Finding 01 · Rocket League 1v1</p>
+    <h2>One reward weight separates 0.922 from a policy that collapses</h2>
+    <p>
+      Ten branches, same environment, same trainer, same objective — only the
+      reward differs. The spread is not marginal: the sparse control never
+      leaves <span class="num">0.355</span> in 401M steps, while the winner
+      reaches <span class="num">0.922</span>. And at
+      <code>approach_ball = 20</code> the policy peaks at
+      <span class="num">0.599</span> and then <em>falls</em> to
+      <span class="num">0.353</span> — while its training return rose twentyfold.
+    </p>
+    <figure>
+      <div class="plot" id="p-rl"></div>
+      <div class="legend" id="l-rl"></div>
+      <figcaption>
+        Win rate against a scripted ball-chaser, 2,000 deterministic kickoffs per
+        evaluation. Grey lines are the six other branches in the same search.
+      </figcaption>
+      <details>
+        <summary>▸ data table</summary>
+        <div id="t-rl"></div>
+      </details>
+    </figure>
+    <div class="caveat">
+      <b>Why this is the strongest chart here:</b> the collapsing branch is the
+      case hand-tuning cannot catch. Its training return was rising the whole
+      time. Only an objective the reward cannot touch reports the fall — which is
+      the one structural claim this framework makes.
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────────── -->
+  <section class="finding">
+    <p class="eyebrow">Finding 02 · Street Fighter III, level-8 CPU</p>
+    <h2>The search beat the hand-tuned reward by 22 points — and random beat them both</h2>
+    <p>
+      At matched model, interface and configuration, the searched reward
+      (<code>r3_potential</code>) scored <span class="num">77.0%</span> against
+      the hand-tuned reward's <span class="num">55.0%</span>. That is the
+      comparison this framework exists to win, and it won it.
+    </p>
+    <p>
+      It is also not the whole picture. Uniform random over the same 40-macro
+      vocabulary scores <span class="num">87.5%</span> and beats every trained
+      policy by a significant margin — including this framework's own finished
+      run at <span class="num">73.6%</span>
+      (<span class="num">p = 0.006</span>). Read that as a statement about the
+      metric before reading it as one about the policies: a win rate that
+      uniform macro-mashing maximises is not measuring what "good at Street
+      Fighter" would mean, and every comparison on this chart inherits that.
+      It is still the right objective for a reward search — it is outside the
+      agent's reach and it is the number the predecessor project published —
+      but it bounds what any of these rows can claim.
+    </p>
+    <figure>
+      <div class="plot" id="p-sf"></div>
+      <figcaption>
+        Win rate with 95% confidence intervals; <span class="num">n</span> differs
+        per arm and is labelled. Intervals that overlap are not separated by this
+        evidence.
+      </figcaption>
+      <details>
+        <summary>▸ data table</summary>
+        <div id="t-sf"></div>
+      </details>
+    </figure>
+    <div class="caveat">
+      <b>What this actually shows:</b> the reward search is doing real work
+      <em>and</em> the environment's metric is compromised — a 40-macro action
+      space where random play wins is measuring something other than skill. The
+      honest reading is "the search improves the reward; this benchmark cannot
+      certify the result." Reporting only the 77 vs 55 bars would have hidden that.
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────────── -->
+  <section class="finding">
+    <p class="eyebrow">Finding 03 · Tetris Battle</p>
+    <h2>The best training signal in the sweep was worth exactly nothing</h2>
+    <p>
+      Six arms, each scored two ways: by self-play win rate (what training sees)
+      and by an independent greedy opponent (what counts). Self-play ranges from
+      <span class="num">0.372</span> to <span class="num">0.807</span>. The
+      objective is <span class="num">0.000</span> for every single one.
+    </p>
+    <figure>
+      <div class="plot" id="p-tx"></div>
+      <figcaption>
+        Each point is one reward configuration. A search steered by training
+        signal would have selected the rightmost point — the worst possible
+        choice, indistinguishable from the best by that metric.
+      </figcaption>
+      <details>
+        <summary>▸ data table</summary>
+        <div id="t-tx"></div>
+      </details>
+    </figure>
+    <div class="caveat">
+      <b>This is why the objective is structurally separated.</b> The evaluator
+      imports no reward module, enforced by a test that walks the import graph.
+      Without that wall, the arm at <span class="num">0.807</span> self-play
+      looks like progress and ships.
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────────── -->
+  <section class="finding">
+    <p class="eyebrow">Finding 04 · Tetris Battle</p>
+    <h2>Sometimes the answer is "this axis is flat" — and that is worth $4.51</h2>
+    <p>
+      Two independent reward rewrites and a shaping scale swept from
+      <span class="num">0.0</span> to <span class="num">4.0</span> produced one
+      number: <span class="num">0.000</span>. Then the policy's
+      <em>representation</em> changed — scoring the board each placement would
+      produce, instead of choosing among 240 abstract action indices — and the
+      same reward, byte-identical, scored <span class="num">0.994</span>.
+    </p>
+    <figure>
+      <div class="plot" id="p-tn"></div>
+      <div class="legend" id="l-tn"></div>
+      <figcaption>
+        Win rate against a greedy El-Tetris opponent. The two highlighted bars
+        carry the <em>same</em> reward configuration and differ only in how the
+        policy reads an action.
+      </figcaption>
+      <details>
+        <summary>▸ data table</summary>
+        <div id="t-tn"></div>
+      </details>
+    </figure>
+    <div class="caveat">
+      <b>Against the framework, honestly:</b> autobranch branches mutate rewards.
+      It cannot make the change that mattered here — that is a different network,
+      not a different weight. What it can do is rule out the axis it <em>does</em>
+      search in six branches and $4.51, which is the useful half of this result.
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────────── -->
+  <section class="finding">
+    <p class="eyebrow">Finding 05 · Rocket League, cost</p>
+    <h2>The winner cost $6.25. The other $23.65 bought knowing why</h2>
+    <p>
+      Per-branch spend against the best score each reached. The top-right point
+      is the winner. The point above it scored <span class="num">0.930</span> —
+      higher — and was still abandoned, because it needed
+      <span class="num">1,325M</span> steps to reach what the winner reached in
+      <span class="num">1,140M</span>.
+    </p>
+    <figure>
+      <div class="plot" id="p-ct"></div>
+      <div class="legend" id="l-ct"></div>
+      <figcaption>
+        Each point is one branch. Spend is apportioned by share of training steps;
+        only the $29.90 total is a measured figure.
+      </figcaption>
+      <details>
+        <summary>▸ data table</summary>
+        <div id="t-ct"></div>
+      </details>
+    </figure>
+    <div class="caveat">
+      <b>The efficiency claim, stated narrowly:</b> a branch forks from a
+      filesystem snapshot, so exploring six rewards from a checkpoint costs six
+      continuations rather than six runs from scratch. That is why ten branches
+      fit in $29.90 — not because any single branch is cheap.
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────────── -->
+  <section class="finding">
+    <p class="eyebrow">Limits</p>
+    <h2>What these charts do not show</h2>
+    <p class="note">
+      <strong>Three of four runs are reconstructions.</strong> Rocket League and
+      Tetris map hand-driven sweeps onto the branch tree the framework would have
+      produced; every score, weight and step count is real, but the agent turns
+      are not. Each run's <code>PROVENANCE</code> block says which parts are
+      measured and which are reconstructed.
+    </p>
+    <p class="note">
+      <strong>The SF3 run finished, and its searched rewards lost.</strong>
+      <code>run-25ed75aa0a</code> spent <span class="num">$90.84</span> over
+      <span class="num">5.6&nbsp;h</span> on four branches. Its best policy
+      scores <span class="num">0.736</span> at <span class="num">n = 72</span>,
+      interval <span class="num">[0.624, 0.824]</span> — measured with Hinh's
+      <em>unmodified</em> reward. Both mutations the agent tried scored worse
+      (<span class="num">0.667</span> for an added stun term,
+      <span class="num">0.625</span> for stronger damage shaping; combined
+      one-sided <span class="num">p = 0.016</span>). On this environment the
+      search confirmed the hand-tuned reward instead of improving on it, and
+      the gain over <code>r2_hinh</code> comes from the training setup, not
+      from a discovered reward.
+    </p>
+    <p class="note">
+      <strong>That run's own headline was inflated, by its own measurement
+      tooling.</strong> The same checkpoint scored
+      <span class="num">0.958</span> at <span class="num">n = 24</span> and
+      <span class="num">0.736</span> at <span class="num">n = 72</span>, and
+      the two disagree (<span class="num">z = 2.32</span>,
+      <span class="num">p = 0.020</span>) — the evaluator had pinned its
+      concurrency to its match count, which collapses every batch onto one
+      emulator seed, so the small sample was a favourable draw rather than a
+      noisier estimate. Every fork, abandonment and reward rejection in that
+      run was decided at that resolution. The number above is the corrected
+      one; the defect is fixed, and it is the strongest argument on this page
+      for measuring the objective independently and at honest&nbsp;n.
+    </p>
+    <p class="note">
+      <strong>No head-to-head against a published model exists.</strong>
+      "Beats Hinh" here means beats his <em>reward</em> reimplemented in our
+      harness, at matched size and configuration. His checkpoint has never been
+      run against ours on the same opponent.
+    </p>
+    <p class="note">
+      <strong>And the framework is not always the right tool.</strong> Finding 04
+      is a case where the entire axis it searches was flat, and the improvement
+      came from somewhere it cannot reach.
+    </p>
+  </section>
+</div>
+
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ── data (every value a real measurement) ────────────────────────────────
+  const RL = {
+    highlight: [
+      { id: "b0.2.3",  label: "approach_ball = 3",  slot: 1,
+        pts: [[100,.346],[300,.714],[600,.874],[800,.903],[1062,.922],[1140,.918]] },
+      { id: "b0.2.1",  label: "approach_ball = 20", slot: 2,
+        pts: [[51,.599],[101,.457],[151,.389],[201,.353]] },
+      { id: "b0.3",    label: "goal only, no shaping", slot: 3,
+        pts: [[100,.346],[200,.351],[354,.355],[401,.355]] }
+    ],
+    muted: [
+      { id: "b0",       pts: [[20,.343],[80,.354],[140,.349],[201,.347]] },
+      { id: "b0.1",     pts: [[60,.345],[180,.361],[354,.365],[393,.364]] },
+      { id: "b0.2",     pts: [[50,.337],[100,.401],[150,.429],[209,.429]] },
+      { id: "b0.2.2",   pts: [[150,.731],[300,.85],[450,.792],[562,.738]] },
+      { id: "b0.2.3.1", pts: [[101,.731],[200,.648],[300,.571],[417,.53]] },
+      { id: "b0.2.3.2", pts: [[100,.342],[300,.699],[556,.896],[601,.896]] },
+      { id: "b0.1.1",   pts: [[200,.361],[600,.688],[1000,.901],[1210,.93],[1325,.922]] }
+    ]
+  };
+
+  const SF = [
+    { label: "uniform random over 40 macros", v: 87.5, lo: 82.2, hi: 91.4, n: 200, kind: "ref"  },
+    { label: "searched reward (r3_potential)", v: 77.0, lo: 70.7, hi: 82.3, n: 200, kind: "win"  },
+    { label: "autobranch · Qwen3-VL-8B (finished)", v: 73.6, lo: 62.4, hi: 82.4, n: 72, kind: "live" },
+    { label: "hand-tuned reward (r2_hinh)",    v: 55.0, lo: 45.2, hi: 64.4, n: 100, kind: "base" },
+    { label: "untrained Qwen3-4B, sampled",    v: 45.9, lo: 39.2, hi: 52.7, n: 207, kind: "ref"  },
+    { label: "any checkpoint at the argmax",   v:  0.0, lo:  0.0, hi:  3.7, n: 100, kind: "ref"  }
+  ];
+
+  const TX = [
+    { id: "b0.3",   sp: .807, ob: 0 }, { id: "b0.2",   sp: .746, ob: 0 },
+    { id: "b0.3.2", sp: .709, ob: 0 }, { id: "b0.1",   sp: .680, ob: 0 },
+    { id: "b0",     sp: .673, ob: 0 }, { id: "b0.3.1", sp: .372, ob: 0 }
+  ];
+
+  const TN = [
+    { id: "b0",     v: 0,    rep: "flat", note: "shaping 0.0" },
+    { id: "b0.1",   v: 0,    rep: "flat", note: "shaping 0.2", mark: true },
+    { id: "b0.2",   v: 0,    rep: "flat", note: "shaping 0.5" },
+    { id: "b0.3",   v: 0,    rep: "flat", note: "shaping 2.0 + clear" },
+    { id: "b0.3.1", v: 0,    rep: "flat", note: "shaping 4.0" },
+    { id: "b0.3.2", v: 0,    rep: "flat", note: "clear 0.8" },
+    { id: "b0.1.1", v: .994, rep: "after", note: "same reward as b0.1", mark: true },
+    { id: "b0.1.1.1",   v: .930, rep: "after", note: "attack 1.0" },
+    { id: "b0.1.1.2",   v: .974, rep: "after", note: "attack 2.0" },
+    { id: "b0.1.1.2.1", v: .982, rep: "after", note: "256-wide scorer" }
+  ];
+
+  const CT = [
+    { id: "b0",       sp: 1.103, v: .354 }, { id: "b0.1",     sp: 2.156, v: .365 },
+    { id: "b0.2",     sp: 1.147, v: .429 }, { id: "b0.2.1",   sp: 1.103, v: .599 },
+    { id: "b0.2.2",   sp: 3.083, v: .850 }, { id: "b0.2.3",   sp: 6.254, v: .922, win: true },
+    { id: "b0.2.3.1", sp: 2.288, v: .731 }, { id: "b0.2.3.2", sp: 3.297, v: .896 },
+    { id: "b0.3",     sp: 2.200, v: .355 }, { id: "b0.1.1",   sp: 7.269, v: .930, over: true }
+  ];
+
+  // ── tiny svg helper ──────────────────────────────────────────────────────
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (n, a) => { const e = document.createElementNS(NS, n);
+    for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const V = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const slot = i => V("--s" + i);
+
+  const tip = document.getElementById("tip");
+  function showTip(ev, title, lines) {
+    tip.innerHTML = '<div class="tip-t">' + title + "</div>" + lines.join("<br>");
+    tip.classList.add("on");
+    const r = tip.getBoundingClientRect();
+    let x = ev.clientX + 14, y = ev.clientY - r.height - 12;
+    if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - 14;
+    if (y < 8) y = ev.clientY + 18;
+    tip.style.left = x + "px"; tip.style.top = y + "px";
+  }
+  const hideTip = () => tip.classList.remove("on");
+  document.addEventListener("scroll", hideTip, { passive: true });
+
+  function frame(host, w, h) {
+    const svg = el("svg", { viewBox: "0 0 " + w + " " + h, width: w, height: h,
+                            role: "img" });
+    host.appendChild(svg);
+    return svg;
+  }
+  function table(host, cols, rows) {
+    const t = el2("table"), hd = el2("thead"), tr = el2("tr");
+    cols.forEach(c => { const th = el2("th"); th.textContent = c; tr.appendChild(th); });
+    hd.appendChild(tr); t.appendChild(hd);
+    const tb = el2("tbody");
+    rows.forEach(r => { const x = el2("tr");
+      r.forEach(c => { const td = el2("td"); td.textContent = c; x.appendChild(td); });
+      tb.appendChild(x); });
+    t.appendChild(tb); host.appendChild(t);
+  }
+  const el2 = n => document.createElement(n);
+
+  function legend(host, items) {
+    host.innerHTML = "";
+    items.forEach(it => {
+      const s = el2("span");
+      const sw = el2("i");
+      sw.className = "swatch" + (it.line ? " line-mark" : "");
+      sw.style.background = it.color;
+      s.appendChild(sw);
+      s.appendChild(document.createTextNode(it.label));
+      host.appendChild(s);
+    });
+  }
+
+  // ── 01 · Rocket League trajectories ──────────────────────────────────────
+  function rocket() {
+    const host = document.getElementById("p-rl");
+    const W = 860, H = 380, M = { t: 26, r: 34, b: 44, l: 48 };
+    const svg = frame(host, W, H);
+    const iw = W - M.l - M.r, ih = H - M.t - M.b;
+    const xs = v => M.l + (v / 1400) * iw;
+    const ys = v => M.t + ih - ((v - 0.30) / (0.98 - 0.30)) * ih;
+
+    const g = el("g", { class: "grid" });
+    [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].forEach(v => {
+      g.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: ys(v), y2: ys(v) }));
+    });
+    svg.appendChild(g);
+
+    const ax = el("g", { class: "axis" });
+    [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].forEach(v => {
+      const t = el("text", { x: M.l - 9, y: ys(v) + 4, "text-anchor": "end" });
+      t.textContent = v.toFixed(1); ax.appendChild(t);
+    });
+    [0, 350, 700, 1050, 1400].forEach(v => {
+      const t = el("text", { x: xs(v), y: M.t + ih + 20, "text-anchor": "middle" });
+      t.textContent = v === 0 ? "0" : v + "M"; ax.appendChild(t);
+    });
+    const xt = el("text", { x: M.l + iw / 2, y: H - 6, "text-anchor": "middle",
+                            class: "axis-title" });
+    xt.textContent = "TRAINING STEPS"; ax.appendChild(xt);
+    const yt = el("text", { x: 13, y: M.t + ih / 2, "text-anchor": "middle",
+                            class: "axis-title",
+                            transform: "rotate(-90 13 " + (M.t + ih / 2) + ")" });
+    yt.textContent = "WIN RATE"; ax.appendChild(yt);
+    svg.appendChild(ax);
+
+    const path = p => p.map((q, i) => (i ? "L" : "M") + xs(q[0]) + " " + ys(q[1])).join(" ");
+
+    RL.muted.forEach(b => {
+      svg.appendChild(el("path", { d: path(b.pts), fill: "none",
+        stroke: V("--muted-series"), "stroke-width": 1.5, "stroke-linecap": "round" }));
+    });
+
+    RL.highlight.forEach(b => {
+      const c = slot(b.slot);
+      svg.appendChild(el("path", { d: path(b.pts), fill: "none", stroke: c,
+        "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+      b.pts.forEach(q => {
+        svg.appendChild(el("circle", { cx: xs(q[0]), cy: ys(q[1]), r: 4.5, fill: c,
+          stroke: V("--surface"), "stroke-width": 2 }));
+        const hit = el("circle", { cx: xs(q[0]), cy: ys(q[1]), r: 13,
+                                   fill: "transparent", style: "cursor:crosshair" });
+        hit.addEventListener("mousemove", e => showTip(e, b.id,
+          [b.label, q[0] + "M steps", "win rate " + q[1].toFixed(3)]));
+        hit.addEventListener("mouseleave", hideTip);
+        svg.appendChild(hit);
+      });
+      // Label the BEST value at the point it occurred, not the final one.
+      // The winner's last reading is 0.918 while its peak is 0.922, and a
+      // chart captioned "reaches 0.922" that prints 0.918 makes the reader
+      // stop and reconcile two true numbers.
+      const best = b.pts.reduce((a, q) => (q[1] > a[1] ? q : a), b.pts[0]);
+      const lab = el("text", { x: xs(best[0]), y: ys(best[1]) - 13,
+                               "text-anchor": "middle", class: "dlabel", fill: c });
+      lab.textContent = best[1].toFixed(3);
+      svg.appendChild(lab);
+
+      // Where a branch ended materially below its peak, say so at the end of
+      // the line: that gap IS the finding for the over-shaped branch.
+      const last = b.pts[b.pts.length - 1];
+      if (best[1] - last[1] > 0.02) {
+        const drop = el("text", { x: xs(last[0]) + 9, y: ys(last[1]) + 4,
+                                  class: "dlabel", fill: c });
+        drop.textContent = "\u2192 " + last[1].toFixed(3);
+        svg.appendChild(drop);
+      }
+    });
+
+    // Name the collapse once, under the line it belongs to. The peak and the
+    // final value are already labelled by the loop above.
+    const ann = el("text", { x: xs(140), y: ys(0.455), class: "dlabel",
+                             fill: slot(2), "font-size": "11" });
+    ann.textContent = "peaks, then falls";
+    svg.appendChild(ann);
+
+    legend(document.getElementById("l-rl"), [
+      { color: slot(1), label: "b0.2.3 — winner", line: true },
+      { color: slot(2), label: "b0.2.1 — over-shaped, collapses", line: true },
+      { color: slot(3), label: "b0.3 — sparse control", line: true },
+      { color: V("--muted-series"), label: "six other branches", line: true }
+    ]);
+
+    const rows = [];
+    RL.highlight.concat(RL.muted).forEach(b => {
+      const best = Math.max.apply(null, b.pts.map(p => p[1]));
+      rows.push([b.id, b.pts[b.pts.length - 1][0] + "M", best.toFixed(3),
+                 b.pts[b.pts.length - 1][1].toFixed(3)]);
+    });
+    table(document.getElementById("t-rl"),
+          ["branch", "steps", "best", "final"], rows);
+  }
+
+  // ── 02 · SF3 dot plot with intervals ─────────────────────────────────────
+  function sf3() {
+    const host = document.getElementById("p-sf");
+    const W = 860, rowH = 46, M = { t: 16, r: 92, b: 44, l: 250 };
+    const H = M.t + SF.length * rowH + M.b;
+    const svg = frame(host, W, H);
+    const iw = W - M.l - M.r;
+    const xs = v => M.l + (v / 100) * iw;
+
+    const g = el("g", { class: "grid" });
+    [0, 25, 50, 75, 100].forEach(v => {
+      g.appendChild(el("line", { x1: xs(v), x2: xs(v), y1: M.t - 4,
+                                 y2: M.t + SF.length * rowH }));
+    });
+    svg.appendChild(g);
+
+    const ax = el("g", { class: "axis" });
+    [0, 25, 50, 75, 100].forEach(v => {
+      const t = el("text", { x: xs(v), y: M.t + SF.length * rowH + 20,
+                             "text-anchor": "middle" });
+      t.textContent = v + "%"; ax.appendChild(t);
+    });
+    const xt = el("text", { x: M.l + iw / 2, y: H - 6, "text-anchor": "middle",
+                            class: "axis-title" });
+    xt.textContent = "WIN RATE vs LEVEL-8 CPU  (95% CI)"; ax.appendChild(xt);
+    svg.appendChild(ax);
+
+    SF.forEach((d, i) => {
+      const y = M.t + i * rowH + rowH / 2;
+      const c = d.kind === "win" ? slot(1)
+              : d.kind === "live" ? slot(3)
+              : d.kind === "base" ? slot(2)
+              : V("--muted-series");
+
+      const lab = el("text", { x: M.l - 14, y: y + 4, "text-anchor": "end",
+                               class: "axis" });
+      lab.setAttribute("fill", V("--ink-2"));
+      lab.setAttribute("font-size", "12.5");
+      lab.textContent = d.label;
+      svg.appendChild(lab);
+
+      svg.appendChild(el("line", { x1: xs(d.lo), x2: xs(d.hi), y1: y, y2: y,
+        stroke: c, "stroke-width": 2, "stroke-linecap": "round", opacity: .55 }));
+      [d.lo, d.hi].forEach(v => {
+        svg.appendChild(el("line", { x1: xs(v), x2: xs(v), y1: y - 5, y2: y + 5,
+          stroke: c, "stroke-width": 2, "stroke-linecap": "round", opacity: .8 }));
+      });
+      svg.appendChild(el("circle", { cx: xs(d.v), cy: y, r: 5.5, fill: c,
+        stroke: V("--surface"), "stroke-width": 2 }));
+
+      const val = el("text", { x: xs(d.hi) + 12, y: y + 4, class: "dlabel", fill: c });
+      val.textContent = d.v.toFixed(1) + "%";
+      svg.appendChild(val);
+
+      const hit = el("rect", { x: M.l, y: y - rowH / 2, width: iw, height: rowH,
+                               fill: "transparent", style: "cursor:crosshair" });
+      hit.addEventListener("mousemove", e => showTip(e, d.label,
+        ["win rate " + d.v.toFixed(1) + "%",
+         "95% CI [" + d.lo.toFixed(1) + ", " + d.hi.toFixed(1) + "]",
+         "n = " + d.n]));
+      hit.addEventListener("mouseleave", hideTip);
+      svg.appendChild(hit);
+    });
+
+    table(document.getElementById("t-sf"),
+      ["arm", "win rate", "95% CI", "n"],
+      SF.map(d => [d.label, d.v.toFixed(1) + "%",
+                   "[" + d.lo.toFixed(1) + ", " + d.hi.toFixed(1) + "]", d.n]));
+  }
+
+  // ── 03 · Tetris: training signal vs objective ────────────────────────────
+  function tetrisTrap() {
+    const host = document.getElementById("p-tx");
+    const W = 860, H = 320, M = { t: 24, r: 36, b: 52, l: 60 };
+    const svg = frame(host, W, H);
+    const iw = W - M.l - M.r, ih = H - M.t - M.b;
+    const xs = v => M.l + ((v - .30) / (.90 - .30)) * iw;
+    const ys = v => M.t + ih - (v / 1.0) * ih;
+
+    const g = el("g", { class: "grid" });
+    [0, .25, .5, .75, 1].forEach(v =>
+      g.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: ys(v), y2: ys(v) })));
+    svg.appendChild(g);
+
+    const ax = el("g", { class: "axis" });
+    [0, .25, .5, .75, 1].forEach(v => {
+      const t = el("text", { x: M.l - 9, y: ys(v) + 4, "text-anchor": "end" });
+      t.textContent = v.toFixed(2); ax.appendChild(t);
+    });
+    [.3, .45, .6, .75, .9].forEach(v => {
+      const t = el("text", { x: xs(v), y: M.t + ih + 20, "text-anchor": "middle" });
+      t.textContent = v.toFixed(2); ax.appendChild(t);
+    });
+    const xt = el("text", { x: M.l + iw / 2, y: H - 8, "text-anchor": "middle",
+                            class: "axis-title" });
+    xt.textContent = "SELF-PLAY WIN RATE  (what training sees)"; ax.appendChild(xt);
+    const yt = el("text", { x: 15, y: M.t + ih / 2, "text-anchor": "middle",
+                            class: "axis-title",
+                            transform: "rotate(-90 15 " + (M.t + ih / 2) + ")" });
+    yt.textContent = "OBJECTIVE  (what counts)"; ax.appendChild(yt);
+    svg.appendChild(ax);
+
+    // The flat line of zeros is the whole message — draw it as a rule.
+    svg.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: ys(0), y2: ys(0),
+      stroke: slot(2), "stroke-width": 2, "stroke-dasharray": "1 5",
+      "stroke-linecap": "round", opacity: .5 }));
+
+    TX.forEach(d => {
+      svg.appendChild(el("circle", { cx: xs(d.sp), cy: ys(d.ob), r: 6,
+        fill: slot(2), stroke: V("--surface"), "stroke-width": 2 }));
+      const hit = el("circle", { cx: xs(d.sp), cy: ys(d.ob), r: 15,
+                                 fill: "transparent", style: "cursor:crosshair" });
+      hit.addEventListener("mousemove", e => showTip(e, d.id,
+        ["self-play " + d.sp.toFixed(3), "objective " + d.ob.toFixed(3),
+         "vs greedy, n = 200"]));
+      hit.addEventListener("mouseleave", hideTip);
+      svg.appendChild(hit);
+    });
+
+    const best = TX[0];
+    const a1 = el("text", { x: xs(best.sp), y: ys(0) - 20, "text-anchor": "middle",
+                            class: "dlabel", fill: slot(2) });
+    a1.textContent = "best self-play (0.807) → still 0.000";
+    svg.appendChild(a1);
+
+    table(document.getElementById("t-tx"),
+      ["branch", "self-play", "objective"],
+      TX.map(d => [d.id, d.sp.toFixed(3), d.ob.toFixed(3)]));
+  }
+
+  // ── 04 · Tetris: the null, then the representation change ────────────────
+  function tetrisNull() {
+    const host = document.getElementById("p-tn");
+    const W = 860, H = 330, M = { t: 22, r: 28, b: 76, l: 52 };
+    const svg = frame(host, W, H);
+    const iw = W - M.l - M.r, ih = H - M.t - M.b;
+    const bw = iw / TN.length;
+    const ys = v => M.t + ih - v * ih;
+
+    const g = el("g", { class: "grid" });
+    [0, .25, .5, .75, 1].forEach(v =>
+      g.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: ys(v), y2: ys(v) })));
+    svg.appendChild(g);
+
+    const ax = el("g", { class: "axis" });
+    [0, .25, .5, .75, 1].forEach(v => {
+      const t = el("text", { x: M.l - 9, y: ys(v) + 4, "text-anchor": "end" });
+      t.textContent = v.toFixed(2); ax.appendChild(t);
+    });
+    svg.appendChild(ax);
+
+    TN.forEach((d, i) => {
+      const x = M.l + i * bw + 7;            // 2px+ surface gap between bars
+      const w = bw - 14;
+      const c = d.rep === "flat" ? slot(2) : slot(1);
+      const h = Math.max(d.v * ih, 2.5);     // zero still reads as a mark
+      svg.appendChild(el("rect", { x: x, y: ys(d.v), width: w,
+        height: h, rx: 4, fill: c, opacity: d.mark ? 1 : .62 }));
+
+      const lv = el("text", { x: x + w / 2, y: ys(d.v) - 9, "text-anchor": "middle",
+                              class: "dlabel", fill: c });
+      lv.textContent = d.v.toFixed(3);
+      svg.appendChild(lv);
+
+      const li = el("text", { x: x + w / 2, y: M.t + ih + 18, "text-anchor": "middle",
+                              class: "axis" });
+      li.setAttribute("fill", V("--ink-3"));
+      li.setAttribute("font-size", "10.5");
+      li.textContent = d.id;
+      svg.appendChild(li);
+
+      const hit = el("rect", { x: M.l + i * bw, y: M.t, width: bw, height: ih,
+                               fill: "transparent", style: "cursor:crosshair" });
+      hit.addEventListener("mousemove", e => showTip(e, d.id,
+        [d.note, d.rep === "flat" ? "240 action indices" : "afterstate scorer",
+         "objective " + d.v.toFixed(3)]));
+      hit.addEventListener("mouseleave", hideTip);
+      svg.appendChild(hit);
+    });
+
+    const note = el("text", { x: M.l + iw / 2, y: H - 34, "text-anchor": "middle",
+                              class: "axis-title" });
+    note.setAttribute("fill", V("--ink-2"));
+    note.textContent = "b0.1 and b0.1.1 carry a byte-identical reward";
+    svg.appendChild(note);
+
+    legend(document.getElementById("l-tn"), [
+      { color: slot(2), label: "240 abstract action indices — 525,041 params" },
+      { color: slot(1), label: "afterstate scorer — 11,617 params" }
+    ]);
+
+    table(document.getElementById("t-tn"),
+      ["branch", "representation", "reward", "objective"],
+      TN.map(d => [d.id, d.rep === "flat" ? "240-action" : "afterstate",
+                   d.note, d.v.toFixed(3)]));
+  }
+
+  // ── 05 · cost vs result ──────────────────────────────────────────────────
+  function cost() {
+    const host = document.getElementById("p-ct");
+    const W = 860, H = 340, M = { t: 24, r: 40, b: 54, l: 56 };
+    const svg = frame(host, W, H);
+    const iw = W - M.l - M.r, ih = H - M.t - M.b;
+    const xs = v => M.l + (v / 8) * iw;
+    const ys = v => M.t + ih - ((v - .30) / (1.0 - .30)) * ih;
+
+    const g = el("g", { class: "grid" });
+    [.3, .5, .7, .9].forEach(v =>
+      g.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: ys(v), y2: ys(v) })));
+    svg.appendChild(g);
+
+    const ax = el("g", { class: "axis" });
+    [.3, .5, .7, .9].forEach(v => {
+      const t = el("text", { x: M.l - 9, y: ys(v) + 4, "text-anchor": "end" });
+      t.textContent = v.toFixed(1); ax.appendChild(t);
+    });
+    [0, 2, 4, 6, 8].forEach(v => {
+      const t = el("text", { x: xs(v), y: M.t + ih + 20, "text-anchor": "middle" });
+      t.textContent = "$" + v; ax.appendChild(t);
+    });
+    const xt = el("text", { x: M.l + iw / 2, y: H - 8, "text-anchor": "middle",
+                            class: "axis-title" });
+    xt.textContent = "SPEND PER BRANCH"; ax.appendChild(xt);
+    const yt = el("text", { x: 15, y: M.t + ih / 2, "text-anchor": "middle",
+                            class: "axis-title",
+                            transform: "rotate(-90 15 " + (M.t + ih / 2) + ")" });
+    yt.textContent = "BEST WIN RATE"; ax.appendChild(yt);
+    svg.appendChild(ax);
+
+    CT.forEach(d => {
+      const c = d.win ? slot(1) : d.over ? slot(3) : V("--muted-series");
+      svg.appendChild(el("circle", { cx: xs(d.sp), cy: ys(d.v), r: d.win ? 7 : 5.5,
+        fill: c, stroke: V("--surface"), "stroke-width": 2 }));
+      if (d.win || d.over) {
+        const t = el("text", { x: xs(d.sp), y: ys(d.v) - 14, "text-anchor": "middle",
+                               class: "dlabel", fill: c });
+        t.textContent = d.win ? "winner · " + d.v.toFixed(3)
+                              : d.v.toFixed(3) + " · abandoned";
+        svg.appendChild(t);
+      }
+      const hit = el("circle", { cx: xs(d.sp), cy: ys(d.v), r: 15,
+                                 fill: "transparent", style: "cursor:crosshair" });
+      hit.addEventListener("mousemove", e => showTip(e, d.id,
+        ["$" + d.sp.toFixed(3), "best " + d.v.toFixed(3),
+         d.win ? "selected" : d.over ? "higher score, more compute" : "abandoned"]));
+      hit.addEventListener("mouseleave", hideTip);
+      svg.appendChild(hit);
+    });
+
+    legend(document.getElementById("l-ct"), [
+      { color: slot(1), label: "b0.2.3 — selected (0.922 in 1,140M steps)" },
+      { color: slot(3), label: "b0.1.1 — 0.930, but 1,325M steps" },
+      { color: V("--muted-series"), label: "eight other branches" }
+    ]);
+
+    table(document.getElementById("t-ct"),
+      ["branch", "spend", "best"],
+      CT.slice().sort((a, b) => b.v - a.v)
+        .map(d => [d.id, "$" + d.sp.toFixed(3), d.v.toFixed(3)]));
+  }
+
+  function draw() {
+    ["p-rl", "p-sf", "p-tx", "p-tn", "p-ct"].forEach(id => {
+      const n = document.getElementById(id); if (n) n.innerHTML = "";
+    });
+    ["t-rl", "t-sf", "t-tx", "t-tn", "t-ct"].forEach(id => {
+      const n = document.getElementById(id); if (n) n.innerHTML = "";
+    });
+    rocket(); sf3(); tetrisTrap(); tetrisNull(); cost();
+  }
+
+  draw();
+  // Tokens change with the theme, so the SVGs are rebuilt rather than recolored.
+  if (window.matchMedia) {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    (mq.addEventListener ? mq.addEventListener.bind(mq, "change")
+                         : mq.addListener.bind(mq))(draw);
+  }
+  new MutationObserver(draw).observe(document.documentElement,
+    { attributes: true, attributeFilter: ["data-theme"] });
+})();
+</script>

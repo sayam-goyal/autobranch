@@ -40,6 +40,56 @@ a restarted session must be able to continue without re-deriving anything.
 
 Both are the reason the probes exist: every one of those failures is silent.
 
+## Current state — handoff at 14:20 PST, 15 Nov
+
+The run is **live on Modal** and continues without this session. Deadline
+**16:43 PST** (epoch 1794785000-ish; `created_at + budget.hours`).
+
+```
+run-25ed75aa0a   4 branches, deadline 16:43
+b0        d0  running   0.875 → 0.9167 → 0.9167   (52.8k / 57.6k / 62.4k steps)
+b0.1      d1  running   forked: + super_gain 0.05
+b0.1.1    d2  running   forked: invalid_move 0.125 → 0
+b0.1.1.1  d3  running   at max_depth
+```
+
+**Best measured: 0.9167** (22/24, deterministic, level-8 CPU), Wilson 95%
+[0.742, 0.977]. Against the predecessor's numbers: clears `r2_hinh` 0.550
+[0.452, 0.644] decisively, overlaps `r3_potential` 0.790 [0.700, 0.858].
+
+Three consecutive rises (0.750 → 0.875 → 0.9167 → 0.9167) at n=24 is also what
+drift looks like. The last two are identical, which is the first hint of a
+plateau. **Nothing here is separated at this n** — the honest next step is one
+larger evaluation of the winner, not another training cycle.
+
+### When the deadline passes
+
+```bash
+# 1. what the tree ended up as, with intervals and the null/plateau read
+python examples/sf3/analyze.py --run-id run-25ed75aa0a --out report.md
+
+# 2. a tighter number on the winner: n=72 is 3 batches, ~75 min, ~±10 points
+modal run eval_sf3.py --run-id run-25ed75aa0a --branch-id b0 --matches 72
+
+# 3. the artifact (weights live on the Volume; WEIGHTS.md says where)
+modal run app.py::cli_finalize --run-id run-25ed75aa0a
+
+# 4. if a branch died but the clock has not: resumes from its own export
+modal run app.py::cli_restart --run-id run-25ed75aa0a
+```
+
+### Two numbers not to trust from a laptop
+
+* **Spend.** The UI reads `$60+`; true cost is nearer `$25`. Branches in this
+  run store the ledger's *run-wide* total, and `registry._run_spend` sums
+  branch records when it cannot reach the ledger — which it cannot from
+  off-volume. Fixed in the code (`by_branch()`), but this run carries the old
+  build. The **cap was never affected**: the budget guard reads the ledger
+  directly inside the sandbox, where the figure is correct.
+* **Branch reward configs.** The registry shows each fork carrying its
+  parent's reward; the child writes its own once it starts. Read the events
+  (`forked b0.1: ... super_gain=0.05`) for what a branch actually ran.
+
 ## Commands
 
 ```bash

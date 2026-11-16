@@ -59,6 +59,7 @@ class FakeRegistry:
         self.events = []
         self.updates = []
         self.scores = []
+        self.score_rewards = []
         self.best = None
         self._branches = branches or []
 
@@ -71,8 +72,9 @@ class FakeRegistry:
     def branches(self, run_id):
         return list(self._branches)
 
-    def append_score(self, run_id, branch_id, *, step, score):
+    def append_score(self, run_id, branch_id, *, step, score, reward=None):
         self.scores.append((step, score))
+        self.score_rewards.append(reward)
 
     def get_best(self, run_id):
         return self.best
@@ -154,6 +156,39 @@ def test_a_branch_trains_evaluates_and_reports(spec, env, tmp_path):
     assert trained["n"] == 1
 
 
+def test_training_past_the_best_score_keeps_the_durable_pointer(spec, env, tmp_path, monkeypatch):
+    """Regression, SF3 run-25ed75aa0a / b0.1.1.1.
+
+    `checkpoint` follows the trainer and so reverts to a sandbox-local path
+    on every train call. A branch that improved, published, then trained on
+    and failed to improve finished with `checkpoint` naming a file that died
+    with its sandbox -- and nothing else recorded where the good copy went.
+    `published_checkpoint` must still point at it.
+    """
+    published = tmp_path / "durable" / "latest.pt"
+    published.parent.mkdir()
+    published.write_bytes(b"best")
+    monkeypatch.setattr(
+        BranchRunner, "_publish_weights", lambda self: str(published)
+    )
+    reg = FakeRegistry()
+    runner, _ = build(spec, env, tmp_path, [
+        FakeAction("train", {"steps": 100}), FakeAction("evaluate"),   # 0.9 -> publishes
+        FakeAction("train", {"steps": 100}), FakeAction("evaluate"),   # 0.4 -> no publish
+        FakeAction("report", {"summary": "done"}),
+    ], scores=[0.9, 0.4], registry=reg)
+    runner.run()
+
+    # The trainer's path won the `checkpoint` field, as it always will...
+    assert runner.state.checkpoint != str(published)
+    assert "durable" not in runner.state.checkpoint
+    # ...but the durable copy of the *best* weights is still addressable.
+    assert runner.state.published_checkpoint == str(published)
+    assert any(u.get("published_checkpoint") == str(published) for u in reg.updates)
+    # And it survives a resume, which is how a forked child reads it back.
+    assert BranchState.load(runner._state_path).published_checkpoint == str(published)
+
+
 def test_baseline_reward_is_installed_when_none_is_given(spec, env, tmp_path):
     runner, _ = build(spec, env, tmp_path, [FakeAction("abandon", {"reason": "done looking"})])
     runner.run()
@@ -170,6 +205,11 @@ def test_objective_score_is_recorded_with_its_command(spec, env, tmp_path):
     runner.run()
     assert reg.scores == [(500, 0.4)]
     assert any(u.get("score_command") == "fake-eval" for u in reg.updates)
+    # The score must carry the reward that produced it. A branch's live
+    # reward_config is its *next* intent, so a trajectory without this
+    # snapshot cannot be attributed after the run.
+    assert reg.score_rewards == [runner.state.reward_config]
+    assert reg.score_rewards[0]["weights"]["reached_goal"] == 1.0
 
 
 # ---- the rule that reward is not progress ---------------------------
