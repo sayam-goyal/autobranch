@@ -2,7 +2,7 @@
 
 Run locally -- it creates the sandbox remotely:
 
-    python probe_sf3_env.py
+    python probes/probe_sf3_env.py
 
 This is the second of the two unknowns the SF3 plan rests on. The first was
 whether an 8.77B VL model takes a full-parameter update on one H100

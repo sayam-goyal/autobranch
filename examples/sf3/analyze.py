@@ -250,8 +250,6 @@ def report(run_id: str) -> str:
     add(f"- metrics: `{DATA_VOLUME}:runs/{run_id}/<branch>/metrics.jsonl`")
     add(f"- weights: `{DATA_VOLUME}:runs/{run_id}/<branch>/hf/` "
         "(full HF checkpoints, loadable without this framework)")
-    add("- probe measurements that set the run's shape: `MEASUREMENTS.md`")
-    add("- every discarded run and what each one taught: `RUNBOOK.md`")
     return "\n".join(L) + "\n"
 
 

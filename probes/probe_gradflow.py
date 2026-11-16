@@ -1,6 +1,6 @@
 """Probe: with gradient checkpointing on, which parameters actually get gradients?
 
-    modal run probe_gradflow.py
+    modal run probes/probe_gradflow.py
 
 The live SF3 branch logs this on every run:
 

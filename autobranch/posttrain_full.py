@@ -18,7 +18,7 @@ rather than interesting:
     Adam 8-bit moments    16 GiB    -> 48 GiB, fits with room for activations
 
 so the 8-bit optimizer is not a tuning choice, it is the difference between
-running on one GPU and needing model parallelism. `probe_full_ft.py` measured
+running on one GPU and needing model parallelism. `probes/probe_full_ft.py` measured
 this on the real model with a real frame before any of it was built, because
 the estimate omits exactly the term that matters -- activation memory under
 hundreds of image tokens.
@@ -124,7 +124,7 @@ class FullHyper:
     #: concurrent matches, and halve the number of gradient steps a fixed
     #: deadline buys.
     groups_per_iteration: int = 1
-    #: Measured, not guessed. probe_full_ft.py saw 2.93 s for a single-sample
+    #: Measured, not guessed. probes/probe_full_ft.py saw 2.93 s for a single-sample
     #: forward+backward+step with 30 GiB of headroom left, so a batch of one
     #: would spend 78 minutes updating on a 1600-decision iteration. Prompts
     #: here are ~104 tokens, so 8 fit comfortably in that headroom.
